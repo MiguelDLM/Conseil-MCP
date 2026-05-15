@@ -24,10 +24,10 @@ export async function getTableFieldMetadata(tableName: string): Promise<string> 
   const sql = `
     SELECT
       sci.Name AS FieldName,
-      COALESCE(s.Text, '') AS Label,
-      sci.Type,
-      sci.IsRequired,
-      sci.Format
+      MAX(COALESCE(s.Text, '')) AS Label,
+      MAX(COALESCE(sci.Type, '')) AS Type,
+      MAX(COALESCE(sci.IsRequired, 0)) AS IsReq,
+      MAX(COALESCE(sci.Format, '')) AS Format
     FROM splocalecontaineritem sci
     JOIN splocalecontainer sc ON sci.SpLocaleContainerID = sc.SpLocaleContainerID
     LEFT JOIN splocaleitemstr s ON s.SpLocaleContainerItemNameID = sci.SpLocaleContainerItemID AND s.Language = 'en'
@@ -35,6 +35,7 @@ export async function getTableFieldMetadata(tableName: string): Promise<string> 
       AND (sci.IsHidden = 0 OR sci.IsHidden IS NULL)
       AND sci.Name NOT REGEXP '^(text|integer|number|yesno|remarks)[0-9]+$'
       AND sci.Name NOT REGEXP '^[a-z]+[0-9]+$'
+    GROUP BY sci.Name
     ORDER BY sci.Name
   `;
 

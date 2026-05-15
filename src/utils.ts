@@ -14,7 +14,9 @@ export function formatTable(rows: Record<string, string | null>[]): string {
   const keys = Object.keys(rows[0]);
   const lines = [keys.join('\t'), ...rows.map(r => keys.map(k => {
     let val = r[k];
-    if (val === null || val === undefined) return 'NULL';
+    if (val === null || val === undefined || val === '') return '-';
+    if (val === '\0') return '0';
+    if (val === '\x01') return '1';
     if (typeof val === 'string') {
       // Truncate long strings in tables to keep output concise
       if (val.length > 50) return val.slice(0, 47) + '...';
