@@ -343,6 +343,7 @@ export async function checkSpecimenOnMorphosource(collectionObjectId: number): P
   const querySql = `
     SELECT
       co.CatalogNumber,
+      co.AltCatalogNumber,
       t.FullName as TaxonName,
       inst.Code as InstitutionCode,
       coll.Code as CollectionCode
@@ -360,15 +361,22 @@ export async function checkSpecimenOnMorphosource(collectionObjectId: number): P
   if (!record) return `Collection Object ID ${collectionObjectId} not found.`;
   
   const catalogNumber = record.CatalogNumber;
+  const altCatalogNumber = record.AltCatalogNumber;
   const taxonName = record.TaxonName;
   
   let report = [
-    `=== Morphosource Search for Specimen "${catalogNumber}" (${taxonName || 'Unknown Taxon'}) ===`,
+    `=== Morphosource Search for Specimen "${catalogNumber}" / "${altCatalogNumber || 'N/A'}" (${taxonName || 'Unknown Taxon'}) ===`,
     ''
   ];
 
-  // Search physical objects
-  const objects = await searchMorphosourcePhysicalObjects(catalogNumber || '');
+  // Search physical objects by catalog number
+  let objects = catalogNumber ? await searchMorphosourcePhysicalObjects(catalogNumber) : [];
+  
+  // If not found, try AltCatalogNumber
+  if (objects.length === 0 && altCatalogNumber) {
+    report.push(`No matches for CatalogNumber. Trying AltCatalogNumber "${altCatalogNumber}"...`);
+    objects = await searchMorphosourcePhysicalObjects(altCatalogNumber);
+  }
   
   if (objects.length > 0) {
     report.push(`Found ${objects.length} matching Physical Objects:`);
@@ -412,6 +420,82 @@ export async function checkSpecimenOnMorphosource(collectionObjectId: number): P
         report.push(`No media found for taxon "${taxonName}" either.`);
       }
     }
+  }
+
+  return report.join('\n');
+}
+
+export async function checkSpecimenOnMorphosourceBatch(input: { collection_object_ids?: number[]; query_id?: number; sample_size?: number }): Promise<string> {
+  let ids: number[] = input.collection_object_ids ?? [];
+
+  if (ids.length === 0 && input.query_id !== undefined) {
+    const sampleSize = Math.max(1, Math.min(100, input.sample_size ?? 50));
+    const rows = await query(`SELECT CollectionObjectID FROM collectionobject ORDER BY CollectionObjectID DESC LIMIT ${sampleSize}`);
+    ids = rows.rows.map(r => parseInt(r.CollectionObjectID!));
+  }
+
+  if (ids.length === 0) return 'Provide either `collection_object_ids` (array) or `query_id` to audit.';
+  if (ids.length > 50) return `Refusing to search ${ids.length} specimens at once. Limit is 50 to avoid Morphosource API rate limits.`;
+
+  const idList = ids.join(',');
+  const querySql = `
+    SELECT
+      co.CollectionObjectID,
+      co.CatalogNumber,
+      co.AltCatalogNumber,
+      t.FullName as TaxonName
+    FROM collectionobject co
+    LEFT JOIN determination d ON d.CollectionObjectID = co.CollectionObjectID AND d.IsCurrent = 1
+    LEFT JOIN taxon t ON d.TaxonID = t.TaxonID
+    WHERE co.CollectionObjectID IN (${idList})
+  `;
+  
+  const records = (await query(querySql)).rows;
+  
+  const results = await Promise.all(records.map(async (rec) => {
+    const catNum = rec.CatalogNumber;
+    const altCatNum = rec.AltCatalogNumber;
+    
+    let objects = catNum ? await searchMorphosourcePhysicalObjects(catNum) : [];
+    if (objects.length === 0 && altCatNum) {
+      objects = await searchMorphosourcePhysicalObjects(altCatNum);
+    }
+    
+    return {
+      coId: rec.CollectionObjectID,
+      catNum: catNum || altCatNum || 'Unknown',
+      taxon: rec.TaxonName || 'Unknown',
+      morphoObjects: objects.length,
+      morphoFirstId: objects.length > 0 ? objects[0].id : null
+    };
+  }));
+
+  const found = results.filter(r => r.morphoObjects > 0);
+  const notFound = results.filter(r => r.morphoObjects === 0);
+
+  let report = [`=== Morphosource Batch Search Results ===\n`];
+  report.push(`Total Searched: ${results.length}`);
+  report.push(`Found Matches: ${found.length}\n`);
+
+  if (found.length > 0) {
+    report.push(`✅ Matches Found:`);
+    report.push(formatTable(found.map(f => ({
+      CollectionObjectID: f.coId,
+      SearchTerm: f.catNum,
+      Taxon: f.taxon,
+      ObjectsFound: String(f.morphoObjects),
+      MorphosourceURL: `https://www.morphosource.org/Detail/SpecimenDetail/Show/specimen_id/${f.morphoFirstId}`
+    }))));
+    report.push('');
+  }
+
+  if (notFound.length > 0) {
+    report.push(`❌ No Matches (Showing first 20):`);
+    report.push(formatTable(notFound.slice(0, 20).map(f => ({
+      CollectionObjectID: f.coId,
+      SearchTerm: f.catNum,
+      Taxon: f.taxon
+    }))));
   }
 
   return report.join('\n');

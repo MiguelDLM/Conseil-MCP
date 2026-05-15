@@ -52,9 +52,10 @@ import {
   auditSpecimenDwc,
   auditCollectionDwc,
   checkSpecimenOnMorphosource,
+  checkSpecimenOnMorphosourceBatch,
   searchMorphosourceByTaxon,
-  requestMorphosourceDownload,
-} from './curation.js';
+  requestMorphosourceDownload
+  } from './curation.js';
 import { listFormationsInInterval } from './external-paleo.js';
 import {
   searchPlaziTreatments,
@@ -349,8 +350,11 @@ function createServer() {
 
   // ─── Morphosource ─────────────────────────────────────────────────────────
   register('morphosource_check_specimen', 'Look up a Specify specimen on Morphosource',
-    { specimen_id: z.number() },
-    (a: any) => checkSpecimenOnMorphosource(a.specimen_id));
+    { collection_object_id: z.number() },
+    (a: any) => checkSpecimenOnMorphosource(a.collection_object_id));
+  register('morphosource_check_batch', 'Batch lookup of Specify specimens on Morphosource by IDs or saved query',
+    { collection_object_ids: z.array(z.number()).optional(), query_id: z.number().optional() },
+    (a: any) => checkSpecimenOnMorphosourceBatch(a));
   register('morphosource_search_taxon', 'Search Morphosource media+objects by taxon name',
     { taxon_name: z.string() },
     (a: any) => searchMorphosourceByTaxon(a.taxon_name));
