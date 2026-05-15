@@ -39,10 +39,48 @@ function getWebdavClient() {
 
 /**
  * Searches for an annotation by text or retrieves a specific one by ID.
+ * Fallback to general library items if no annotations are found.
  */
 export async function searchZoteroAnnotations(query: string): Promise<string> {
   const { userId, apiKey } = getZoteroConfig();
-  const url = `https://api.zotero.org/users/${userId}/items?itemType=annotation&q=${encodeURIComponent(query)}&limit=5`;
+  const annoUrl = `https://api.zotero.org/users/${userId}/items?itemType=annotation&q=${encodeURIComponent(query)}&limit=10`;
+  
+  try {
+    const response = await fetch(annoUrl, {
+      headers: { 'Zotero-API-Version': '3', 'Zotero-API-Key': apiKey }
+    });
+    
+    if (!response.ok) return `Zotero API error: ${response.statusText}`;
+    
+    const annoItems = await response.json() as any[];
+    
+    if (annoItems && annoItems.length > 0) {
+      let report = [`=== Zotero Annotations for "${query}" ===\n`];
+      annoItems.forEach((item, index) => {
+        const data = item.data;
+        report.push(`[Match ${index + 1}] Key: ${data.key}`);
+        report.push(`  Parent PDF Item: ${data.parentItem}`);
+        report.push(`  Type: ${data.annotationType}`);
+        report.push(`  Comment: ${data.annotationComment || '--'}`);
+        report.push(`  Text: ${data.annotationText || '--'}`);
+        report.push('');
+      });
+      return report.join('\n');
+    }
+
+    // Fallback to general items if no annotations found
+    return await searchZoteroItems(query);
+  } catch (err: any) {
+    return `Error querying Zotero: ${err.message}`;
+  }
+}
+
+/**
+ * Searches for general library items (journalArticle, book, conferencePaper, etc.)
+ */
+export async function searchZoteroItems(query: string): Promise<string> {
+  const { userId, apiKey } = getZoteroConfig();
+  const url = `https://api.zotero.org/users/${userId}/items?q=${encodeURIComponent(query)}&limit=10`;
   
   try {
     const response = await fetch(url, {
@@ -52,17 +90,27 @@ export async function searchZoteroAnnotations(query: string): Promise<string> {
     if (!response.ok) return `Zotero API error: ${response.statusText}`;
     
     const items = await response.json() as any[];
-    if (!items || items.length === 0) return `No annotations found matching "${query}".`;
+    // Filter out attachments and annotations to show primary items only
+    const primaryItems = items.filter(item => 
+      !['attachment', 'annotation'].includes(item.data.itemType)
+    );
+
+    if (primaryItems.length === 0) return `No library items found matching "${query}".`;
     
-    let report = [`=== Zotero Annotations for "${query}" ===\n`];
+    let report = [`=== Zotero Library Items for "${query}" ===\n`];
     
-    items.forEach((item, index) => {
-      const data = item.data;
-      report.push(`[Match ${index + 1}] Key: ${data.key}`);
-      report.push(`  Parent PDF Item: ${data.parentItem}`);
-      report.push(`  Type: ${data.annotationType}`);
-      report.push(`  Comment: ${data.annotationComment || '--'}`);
-      report.push(`  Text: ${data.annotationText || '--'}`);
+    primaryItems.forEach((item, index) => {
+      const d = item.data;
+      const creators = d.creators ? d.creators.map((c: any) => c.lastName || c.name).join(', ') : 'Unknown';
+      const year = d.date ? d.date.substring(0, 4) : 'n.d.';
+      
+      report.push(`[Match ${index + 1}] ${d.title}`);
+      report.push(`  Key: ${d.key}`);
+      report.push(`  Type: ${d.itemType}`);
+      report.push(`  Authors: ${creators}`);
+      report.push(`  Year: ${year}`);
+      if (d.DOI) report.push(`  DOI: ${d.DOI}`);
+      if (d.publicationTitle) report.push(`  Journal/Book: ${d.publicationTitle}`);
       report.push('');
     });
     

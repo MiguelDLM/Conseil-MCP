@@ -24,3 +24,9 @@ context/*
 !context/table_ids.json
 mcp-client-config.json
 test-login.js
+
+# Agent-specific files
+.agent/
+.gemini/
+.claude/
+.cursor/

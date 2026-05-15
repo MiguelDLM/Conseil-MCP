@@ -78,6 +78,7 @@ import { searchOrcidAgent } from './external-agent.js';
 import { searchOpenAlexLiterature } from './external-literature.js';
 import {
   searchZoteroAnnotations,
+  searchZoteroItems,
   extractZoteroAnnotation,
   cleanupZoteroCache,
   uploadAttachmentToSpecify,
@@ -441,6 +442,9 @@ function createServer() {
     (a: any) => auditCollectionDwc(a));
 
   // ─── Zotero ───────────────────────────────────────────────────────────────
+  register('zotero_search_items', 'Search Zotero library items (papers, books, etc.)',
+    { query: z.string() },
+    (a: any) => searchZoteroItems(a.query));
   register('zotero_search_annotations', 'Search Zotero annotations',
     { query: z.string() },
     (a: any) => searchZoteroAnnotations(a.query));
