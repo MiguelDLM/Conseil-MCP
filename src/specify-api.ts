@@ -105,6 +105,45 @@ export async function apiPost(path: string, body: unknown): Promise<unknown> {
   return data;
 }
 
+export async function apiDelete(path: string): Promise<unknown> {
+  const c = await getClient();
+  // For DELETE, Specify requires the version in the If-Match header usually,
+  // but for generic API pass-through we will expose a method that takes headers if needed.
+  // We'll handle this generically in the universal wrapper.
+  const { data } = await c.delete(path, {
+    headers: { 'X-CSRFToken': csrfToken! },
+  });
+  return data;
+}
+
+export async function executeSpecifyApi(method: string, path: string, body?: any, queryParams?: Record<string, string>, extraHeaders?: Record<string, string>): Promise<any> {
+  const c = await getClient();
+  const reqMethod = method.toUpperCase();
+  
+  const configOpts: any = {
+    method: reqMethod,
+    url: path,
+    headers: { 'X-CSRFToken': csrfToken!, ...(extraHeaders || {}) }
+  };
+
+  if (queryParams) {
+    configOpts.params = queryParams;
+  }
+
+  if (body && ['POST', 'PUT', 'PATCH'].includes(reqMethod)) {
+    configOpts.data = body;
+  }
+
+  try {
+    const response = await c.request(configOpts);
+    return response.data;
+  } catch (error: any) {
+    const status = error.response?.status || 'Unknown';
+    const errorData = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+    throw new Error(`Specify API ${reqMethod} ${path} failed (HTTP ${status}): ${errorData}`);
+  }
+}
+
 export function setCollection(id: number): void {
   collectionId = id;
   client = null; // force re-login with new collection

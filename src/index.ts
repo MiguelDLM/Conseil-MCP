@@ -93,6 +93,7 @@ import {
   geocodeLocality,
 } from './specify-extras.js';
 import { exportDwcArchive } from './dwca-export.js';
+import { executeSpecifyApi } from './specify-api.js';
 
 function createServer() {
   const server = new McpServer({
@@ -147,6 +148,9 @@ function createServer() {
 
   // ─── Specify: Admin ───────────────────────────────────────────────────────
   register('specify_list_users', 'List all Specify users', {}, () => listSpecifyUsers());
+  register('specify_api_request', 'Execute an arbitrary REST API request to Specify 7 official endpoints (e.g. /api/specify/attachment/upload/)', 
+    { method: z.string().describe("GET, POST, PUT, PATCH, DELETE"), path: z.string().describe("Path starting with / (e.g. /api/specify/collectionobject/)"), body: z.string().optional().describe("JSON string payload"), query_params: z.string().optional().describe("JSON string of query parameters"), extra_headers: z.string().optional().describe("JSON string of extra headers") },
+    (a: any) => executeSpecifyApi(a.method, a.path, a.body ? JSON.parse(a.body) : undefined, a.query_params ? JSON.parse(a.query_params) : undefined, a.extra_headers ? JSON.parse(a.extra_headers) : undefined));
   register('specify_create_user', 'Create new Specify user (with Agent linkage). Pass makeAdmin=true to also grant the % resource policy.',
     { username: z.string(), password: z.string(), email: z.string(), firstName: z.string(), lastName: z.string(), collectionId: z.number(), makeAdmin: z.boolean().optional() },
     (a: any) => createSpecifyUser(a.username, a.password, a.email, a.firstName, a.lastName, a.collectionId, a.makeAdmin ?? false));
