@@ -36,7 +36,7 @@ export async function searchMorphosourceMedia(query: string, filters: Record<str
   }
   
   const { data } = await client.get(`/media`, { params });
-  return data.results || [];
+  return data.response?.media || [];
 }
 
 export async function searchMorphosourcePhysicalObjects(query: string, filters: Record<string, string> = {}): Promise<any[]> {
@@ -46,7 +46,7 @@ export async function searchMorphosourcePhysicalObjects(query: string, filters: 
   }
   
   const { data } = await client.get(`/physical-objects`, { params });
-  return data.results || [];
+  return data.response?.physical_objects || [];
 }
 
 export async function getMorphosourceMediaDetails(id: string): Promise<any> {
