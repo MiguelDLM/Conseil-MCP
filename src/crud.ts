@@ -6,6 +6,7 @@ import { query, queryOne, execute, literal } from './db.js';
 import { formatTable } from './utils.js';
 import { safeIdent, safeInt, safeIntList } from './sql-safety.js';
 import { runPythonInWebContainer } from './executor.js';
+import { apiGet, apiPut } from './specify-api.js';
 
 /**
  * Get the Primary Key column name for a table.
@@ -121,57 +122,44 @@ export async function updateRecord(
 ): Promise<string> {
   const tbl = safeIdent(tableName, 'table name');
   const recId = safeInt(id);
-  const pkCol = safeIdent(await getPrimaryKeyColumn(tbl), 'primary key column');
 
-  // Pre-check that the record exists; capture current version for optimistic locking
-  const existing = await queryOne(`SELECT ${pkCol}, version FROM ${tbl} WHERE ${pkCol} = ${recId}`);
-  if (!existing) throw new Error(`Record with ${pkCol}=${recId} not found in table ${tbl}.`);
+  // 1. Fetch current record from API to get the version
+  let currentRecord: any;
+  try {
+    currentRecord = await apiGet(`/api/specify/${tbl}/${recId}/`);
+  } catch (err: any) {
+    if (err.message.includes('404')) {
+      throw new Error(`Record with ID=${recId} not found in table ${tbl}.`);
+    }
+    throw new Error(`Failed to fetch record from API: ${err.message}`);
+  }
 
-  const currentVersion = existing.version !== null && existing.version !== undefined
-    ? parseInt(existing.version as string)
-    : null;
+  const currentVersion = currentRecord.version;
 
-  if (expectedVersion !== undefined && currentVersion !== null && currentVersion !== expectedVersion) {
+  if (expectedVersion !== undefined && currentVersion !== undefined && currentVersion !== expectedVersion) {
     throw new Error(
       `Version conflict on ${tbl}#${recId}: expected ${expectedVersion}, found ${currentVersion}. ` +
       `Re-read the record and retry.`
     );
   }
 
-  let setClauses: string[] = [];
-  for (const [field, value] of Object.entries(updates)) {
-    const col = safeIdent(field, 'update field');
-    if (value === null) {
-      setClauses.push(`${col} = NULL`);
-    } else if (typeof value === 'number') {
-      if (!Number.isFinite(value)) throw new Error(`Invalid numeric value for ${col}.`);
-      setClauses.push(`${col} = ${value}`);
-    } else {
-      setClauses.push(`${col} = ${literal(String(value))}`);
+  // 2. Prepare payload (API allows partial updates via PUT)
+  const payload = {
+    ...updates,
+    version: currentVersion
+  };
+
+  // 3. Send PUT request
+  try {
+    await apiPut(`/api/specify/${tbl}/${recId}/`, payload);
+  } catch (err: any) {
+    if (err.message.includes('409') || err.message.includes('400')) {
+      throw new Error(`Update on ${tbl}#${recId} failed (HTTP ${err.message.match(/HTTP (\d+)/)?.[1] || 'Error'}). Likely a validation issue or concurrent write changed the version. Details: ${err.message}`);
     }
+    throw new Error(`Failed to update record via API: ${err.message}`);
   }
 
-  const columns = await query(`SHOW COLUMNS FROM ${tbl}`);
-  const hasTimestamp = columns.rows.some(r => r.Field?.toLowerCase() === 'timestampmodified');
-  const hasVersion = columns.rows.some(r => r.Field?.toLowerCase() === 'version');
-
-  if (hasTimestamp) setClauses.push(`TimestampModified = NOW()`);
-  if (hasVersion) setClauses.push(`version = version + 1`);
-
-  if (setClauses.length === 0) return 'No updates provided.';
-
-  // Add version guard if we have one (defense in depth even without expectedVersion arg)
-  const versionGuard = (hasVersion && currentVersion !== null)
-    ? ` AND version = ${currentVersion}`
-    : '';
-  const sql = `UPDATE ${tbl} SET ${setClauses.join(', ')} WHERE ${pkCol} = ${recId}${versionGuard}`;
-  const rowsAffected = await execute(sql);
-
-  if (rowsAffected === 0 && versionGuard) {
-    throw new Error(`Update on ${tbl}#${recId} affected 0 rows. Likely a concurrent write changed the version. Re-read and retry.`);
-  }
-
-  return `Successfully updated ${rowsAffected} record(s) in ${tbl}.`;
+  return `Successfully updated record ${recId} in ${tbl} via REST API.`;
 }
 
 export async function batchUpdateRecords(
