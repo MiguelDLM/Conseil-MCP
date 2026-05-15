@@ -12,6 +12,36 @@ export function truncate(text: string, maxLen = 2000): string {
 export function formatTable(rows: Record<string, string | null>[]): string {
   if (rows.length === 0) return '(no results)';
   const keys = Object.keys(rows[0]);
-  const lines = [keys.join('\t'), ...rows.map(r => keys.map(k => r[k] ?? 'NULL').join('\t'))];
+  const lines = [keys.join('\t'), ...rows.map(r => keys.map(k => {
+    let val = r[k];
+    if (val === null || val === undefined) return 'NULL';
+    if (typeof val === 'string') {
+      // Truncate long strings in tables to keep output concise
+      if (val.length > 50) return val.slice(0, 47) + '...';
+      return val;
+    }
+    return String(val);
+  }).join('\t'))];
   return lines.join('\n');
+}
+
+export function stripNulls(obj: any): any {
+  if (obj === null || obj === undefined || obj === '') return undefined;
+  if (Array.isArray(obj)) {
+    const arr = obj.map(stripNulls).filter(v => v !== undefined);
+    return arr.length > 0 ? arr : undefined;
+  }
+  if (typeof obj === 'object') {
+    const res: any = {};
+    let hasKeys = false;
+    for (const key in obj) {
+      const val = stripNulls(obj[key]);
+      if (val !== undefined) {
+        res[key] = val;
+        hasKeys = true;
+      }
+    }
+    return hasKeys ? res : undefined;
+  }
+  return obj;
 }

@@ -9,6 +9,7 @@ import express from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { config } from './config.js';
+import { stripNulls } from './utils.js';
 
 // --- Imports from Modules ---
 import {
@@ -150,7 +151,10 @@ function createServer() {
   register('specify_list_users', 'List all Specify users', {}, () => listSpecifyUsers());
   register('specify_api_request', 'Execute an arbitrary REST API request to Specify 7 official endpoints (e.g. /api/specify/attachment/upload/)', 
     { method: z.string().describe("GET, POST, PUT, PATCH, DELETE"), path: z.string().describe("Path starting with / (e.g. /api/specify/collectionobject/)"), body: z.string().optional().describe("JSON string payload"), query_params: z.string().optional().describe("JSON string of query parameters"), extra_headers: z.string().optional().describe("JSON string of extra headers") },
-    (a: any) => executeSpecifyApi(a.method, a.path, a.body ? JSON.parse(a.body) : undefined, a.query_params ? JSON.parse(a.query_params) : undefined, a.extra_headers ? JSON.parse(a.extra_headers) : undefined));
+    async (a: any) => {
+      const res = await executeSpecifyApi(a.method, a.path, a.body ? JSON.parse(a.body) : undefined, a.query_params ? JSON.parse(a.query_params) : undefined, a.extra_headers ? JSON.parse(a.extra_headers) : undefined);
+      return stripNulls(res);
+    });
   register('specify_create_user', 'Create new Specify user (with Agent linkage). Pass makeAdmin=true to also grant the % resource policy.',
     { username: z.string(), password: z.string(), email: z.string(), firstName: z.string(), lastName: z.string(), collectionId: z.number(), makeAdmin: z.boolean().optional() },
     (a: any) => createSpecifyUser(a.username, a.password, a.email, a.firstName, a.lastName, a.collectionId, a.makeAdmin ?? false));
@@ -163,8 +167,8 @@ function createServer() {
     { table_name: z.string(), record_id: z.number() },
     (a: any) => getRecord(a.table_name, a.record_id));
   register('specify_search', 'Search a table with JSON filters and operators (EQ, NE, GT, GTE, LT, LTE, LIKE, IN, BETWEEN, IS_NULL, IS_NOT_NULL)',
-    { table_name: z.string(), filters: z.string().describe('JSON object. Shorthand: {"field":"val"}. Operator form: {"field":{"op":"GT","value":"2024-01-01"}}'), limit: z.number().optional(), offset: z.number().optional() },
-    (a: any) => searchRecords(a.table_name, JSON.parse(a.filters), a.limit, a.offset));
+    { table_name: z.string(), filters: z.string().describe('JSON object. Shorthand: {"field":"val"}. Operator form: {"field":{"op":"GT","value":"2024-01-01"}}'), limit: z.number().optional().describe("Default 10. Max 500"), offset: z.number().optional(), fields: z.array(z.string()).optional().describe("Optional list of columns to return to save tokens") },
+    (a: any) => searchRecords(a.table_name, JSON.parse(a.filters), a.limit, a.offset, a.fields));
   register('specify_update_row', 'Update fields on a row (optimistic-lock via expected_version)',
     { table_name: z.string(), record_id: z.number(), updates: z.string().describe('JSON object of {column: value}'), expected_version: z.number().optional() },
     (a: any) => updateRecord(a.table_name, a.record_id, JSON.parse(a.updates), a.expected_version));

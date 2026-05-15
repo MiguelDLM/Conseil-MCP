@@ -92,8 +92,9 @@ function buildCondition(col: string, raw: SearchFilterValue): string {
 export async function searchRecords(
   tableName: string,
   filters: Record<string, SearchFilterValue>,
-  limit: number = 20,
+  limit: number = 10,
   offset: number = 0,
+  fields?: string[]
 ): Promise<string> {
   const tbl = safeIdent(tableName, 'table name');
   const safeLimit = Math.max(1, Math.min(500, safeInt(limit, 'limit')));
@@ -106,7 +107,13 @@ export async function searchRecords(
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const sql = `SELECT * FROM ${tbl} ${whereClause} LIMIT ${safeLimit} OFFSET ${safeOffset}`;
+  
+  let selectClause = '*';
+  if (fields && fields.length > 0) {
+    selectClause = fields.map(f => safeIdent(f, 'select field')).join(', ');
+  }
+
+  const sql = `SELECT ${selectClause} FROM ${tbl} ${whereClause} LIMIT ${safeLimit} OFFSET ${safeOffset}`;
 
   const result = await query(sql);
   if (result.rows.length === 0) return 'No records found matching the criteria.';
