@@ -26,19 +26,21 @@ export async function getTableFieldMetadata(tableName: string): Promise<string> 
       sci.Name AS FieldName,
       COALESCE(s.Text, '') AS Label,
       sci.Type,
-      sci.IsHidden,
       sci.IsRequired,
       sci.Format
     FROM splocalecontaineritem sci
     JOIN splocalecontainer sc ON sci.SpLocaleContainerID = sc.SpLocaleContainerID
     LEFT JOIN splocaleitemstr s ON s.SpLocaleContainerItemNameID = sci.SpLocaleContainerItemID AND s.Language = 'en'
     WHERE sc.Name = ${literal(tbl)}
+      AND (sci.IsHidden = 0 OR sci.IsHidden IS NULL)
+      AND sci.Name NOT REGEXP '^(text|integer|number|yesno|remarks)[0-9]+$'
+      AND sci.Name NOT REGEXP '^[a-z]+[0-9]+$'
     ORDER BY sci.Name
   `;
 
   const result = await query(sql);
   if (result.rows.length === 0) {
-    return `No metadata found for table ${tbl} in splocalecontainer. This usually means it uses system defaults.`;
+    return `No metadata found for table ${tbl} in splocalecontainer. This usually means it uses system defaults or all fields are hidden.`;
   }
 
   return formatTable(result.rows);
