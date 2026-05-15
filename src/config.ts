@@ -31,7 +31,12 @@ export const ConfigSchema = z.object({
 
   // Specify 7 specific
   specify: z.object({
+    // Internal URL used for HTTP calls (typically a k8s service like
+    // http://specify7-web).
     url: z.string().default('http://localhost:8080'),
+    // Public URL Django expects in the Referer header (must match one of the
+    // entries in CSRF_TRUSTED_ORIGINS). Defaults to `url`.
+    referer: z.string().default(''),
     appDir: z.string().default('/opt/specify7'),
     collectionId: z.number().default(4),
     userId: z.number().default(1),
@@ -68,6 +73,7 @@ function loadConfig(): Config {
     },
     specify: {
       url: env.SPECIFY_URL,
+      referer: env.SPECIFY_REFERER || env.SPECIFY_URL,
       appDir: env.SPECIFY_APP_DIR,
       collectionId: env.SPECIFY_COLLECTION_ID ? parseInt(env.SPECIFY_COLLECTION_ID) : undefined,
       userId: env.SPECIFY_USER_ID ? parseInt(env.SPECIFY_USER_ID) : undefined,

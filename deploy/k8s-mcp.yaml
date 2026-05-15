@@ -28,6 +28,7 @@ metadata:
 data:
   SPECIFY_CONNECTION_MODE: "kubectl"      # Options: direct, kubectl, docker
   SPECIFY_URL: "http://specify7-web"      # Internal K8s service URL for Specify 7
+  SPECIFY_REFERER: "<CHANGE_ME>"          # Public URL Django expects in Referer (must match CSRF_TRUSTED_ORIGINS), e.g. https://specify.example.com
   SPECIFY_K8S_NAMESPACE: "specify7"
   SPECIFY_K8S_WEB_POD: "deploy/specify7-web"
   SPECIFY_K8S_MARIADB_POD: "mariadb-0"
@@ -169,6 +170,11 @@ spec:
             configMapKeyRef:
               name: conseil-config
               key: SESSION_IDLE_TTL_SECONDS
+        - name: SPECIFY_REFERER
+          valueFrom:
+            configMapKeyRef:
+              name: conseil-config
+              key: SPECIFY_REFERER
         - name: MORPHOSOURCE_API_KEY
           valueFrom:
             configMapKeyRef:

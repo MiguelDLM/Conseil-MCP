@@ -11,15 +11,18 @@ let collectionId: number = config.specify.collectionId;
 export async function getClient(): Promise<AxiosInstance> {
   if (client) return client;
 
-  // Django's CSRF middleware on Specify requires a Referer header when it
-  // sees the connection as HTTPS (which it does behind any TLS-terminating
-  // ingress). We pre-bake the Referer to the base URL on every request.
+  // Django's CSRF middleware on Specify requires a Referer header that
+  // matches one of the entries in CSRF_TRUSTED_ORIGINS. For deployments
+  // where the internal SPECIFY_URL differs from the public hostname (k8s
+  // cluster-internal service vs ingress), set SPECIFY_REFERER to the
+  // public URL Django expects (e.g. https://specify.example.com).
+  const refererUrl = config.specify.referer || config.specify.url;
   client = axios.create({
     baseURL: config.specify.url,
     withCredentials: true,
     headers: {
       'Content-Type': 'application/json',
-      Referer: config.specify.url,
+      Referer: refererUrl,
     },
   });
 
@@ -42,9 +45,13 @@ export async function getClient(): Promise<AxiosInstance> {
         .map(([name, value]) => `${name}=${value}`)
         .join('; ');
     }
-    // Ensure Referer and Origin are set to the baseURL to satisfy Django's CSRF
-    req.headers.Referer = config.specify.url;
-    req.headers.Origin = new URL(config.specify.url).origin;
+    // Referer/Origin must match a value in Django's CSRF_TRUSTED_ORIGINS.
+    req.headers.Referer = refererUrl;
+    req.headers.Origin = new URL(refererUrl).origin;
+    // Also refresh the X-CSRFToken from the live cookie jar in case Django
+    // rotated it (e.g. after login).
+    const liveToken = jar.get('csrftoken');
+    if (liveToken) req.headers['X-CSRFToken'] = liveToken;
     return req;
   });
 

@@ -31,6 +31,7 @@ import {
   batchUpdateRecords,
   listRelatedRecords,
   deleteRecord,
+  createRecord,
 } from './crud.js';
 import { listSpecifyUsers, createSpecifyUser, getSystemHealth, deleteSpecifyUser } from './admin.js';
 import { browseAuthorityTree, getTaxonPath, getDescendantsByRank } from './authority.js';
@@ -158,6 +159,9 @@ function createServer() {
   register('specify_get_row', 'Get a row by primary key',
     { table_name: z.string(), record_id: z.number() },
     (a: any) => getRecord(a.table_name, a.record_id));
+  register('specify_create_row', 'Create a row via Specify REST. data is JSON; FK fields like parent/definition/definitionitem/accepted accept numeric IDs (auto-converted to URIs)',
+    { table_name: z.string(), data: z.string(), extra_uri_fields: z.array(z.string()).optional() },
+    (a: any) => createRecord(a.table_name, JSON.parse(a.data), a.extra_uri_fields ?? []));
   register('specify_search', 'SELECT with JSON filters. filters: {col:"v"} or {col:{op,value}}. ops: EQ,NE,GT,GTE,LT,LTE,LIKE,IN,BETWEEN,IS_NULL,IS_NOT_NULL. fields[] cuts cols.',
     { table_name: z.string(), filters: z.string(), limit: z.number().optional(), offset: z.number().optional(), fields: z.array(z.string()).optional() },
     (a: any) => searchRecords(a.table_name, JSON.parse(a.filters), a.limit, a.offset, a.fields));

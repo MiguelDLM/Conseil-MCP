@@ -6,7 +6,7 @@ import { query, queryOne, execute, literal } from './db.js';
 import { formatTable } from './utils.js';
 import { safeIdent, safeInt, safeIntList } from './sql-safety.js';
 import { runPythonInWebContainer } from './executor.js';
-import { apiGet, apiPut } from './specify-api.js';
+import { apiGet, apiPut, apiPost } from './specify-api.js';
 
 /**
  * Get the Primary Key column name for a table.
@@ -186,6 +186,77 @@ export async function searchRecords(
   if (result.rows.length === 0) return 'No records found matching the criteria.';
 
   return formatTable(result.rows);
+}
+
+/**
+ * Create a new row via Specify's REST API.
+ *
+ * The API handles all the housekeeping: NodeNumber/HighestChildNodeNumber
+ * for tree-shaped tables, default versions, timestamps, etc. The caller
+ * passes only the user-meaningful fields.
+ *
+ * FK references can be provided either as numeric IDs OR full API URIs
+ * ("/api/specify/taxon/261/"). Numeric IDs are auto-converted to URIs for
+ * the keys listed in `auto_uri_fields` (defaults: parent, definition,
+ * definitionitem, accepted, division, discipline, collection).
+ *
+ * Example for a new Order under Mammalia:
+ *   {
+ *     "table_name": "taxon",
+ *     "data": {
+ *       "name": "Sparassodonta",
+ *       "parent": 260,
+ *       "definition": 1,
+ *       "definitionitem": 5
+ *     }
+ *   }
+ */
+export async function createRecord(
+  tableName: string,
+  data: Record<string, any>,
+  extraUriFields: string[] = [],
+): Promise<any> {
+  const tbl = safeIdent(tableName, 'table name').toLowerCase();
+
+  // Default fields whose numeric ID we should auto-convert to a URI.
+  const defaultUriFields: Record<string, string> = {
+    parent: tbl,
+    definition: `${tbl}treedef`,
+    definitionitem: `${tbl}treedefitem`,
+    accepted: tbl,
+    acceptedtaxon: 'taxon',
+    division: 'division',
+    discipline: 'discipline',
+    collection: 'collection',
+    institution: 'institution',
+    referencework: 'referencework',
+    journal: 'journal',
+    geography: 'geography',
+    locality: 'locality',
+    taxon: 'taxon',
+    collectingevent: 'collectingevent',
+    collectionobject: 'collectionobject',
+  };
+
+  const payload: Record<string, any> = {};
+  for (const [k, v] of Object.entries(data)) {
+    const targetTable = defaultUriFields[k.toLowerCase()] ?? (extraUriFields.includes(k) ? tbl : null);
+    if (targetTable && typeof v === 'number') {
+      // Convert numeric ID to URI
+      payload[k] = `/api/specify/${targetTable}/${v}/`;
+    } else if (typeof v === 'string' && /^\d+$/.test(v) && targetTable) {
+      payload[k] = `/api/specify/${targetTable}/${v}/`;
+    } else {
+      payload[k] = v;
+    }
+  }
+
+  try {
+    const created = await apiPost(`/api/specify/${tbl}/`, payload);
+    return created;
+  } catch (err: any) {
+    throw new Error(`Failed to create ${tbl}: ${err.message}`);
+  }
 }
 
 export async function updateRecord(
