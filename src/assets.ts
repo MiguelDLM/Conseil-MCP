@@ -4,32 +4,48 @@
  */
 import { query, queryOne, execute, literal } from './db.js';
 import { formatTable } from './utils.js';
-import { safeIdent, safeInt } from './sql-safety.js';
+import { safeIdent, safeInt, safeIntList } from './sql-safety.js';
 
 import { getPrimaryKeyColumn } from './crud.js';
 
 export async function listAttachments(tableName: string, recordId: number): Promise<string> {
+  return listAttachmentsBatch(tableName, [recordId]);
+}
+
+/**
+ * Batch attachment lookup. Replaces the N+1 pattern of calling
+ * listAttachments() once per record_id with a single query that groups by
+ * parent. Each row in the output carries its parent record's ID so the
+ * caller can split.
+ *
+ * Returns "No attachments found for any of N records." when truly empty.
+ */
+export async function listAttachmentsBatch(tableName: string, recordIds: number[]): Promise<string> {
   const tbl = safeIdent(tableName, 'table name');
-  const rid = safeInt(recordId);
+  const idList = safeIntList(recordIds, 'recordIds', 500);
   const linkTable = safeIdent(`${tbl.toLowerCase()}attachment`, 'link table');
   const pkCol = safeIdent(await getPrimaryKeyColumn(tbl), 'primary key column');
 
   const sql = `
     SELECT
+      link.${pkCol} AS RecordID,
       a.AttachmentID,
       a.OrigFilename,
       a.Title,
       a.MimeType,
-      a.TimestampCreated,
-      a.AttachmentLocation as FileKey
+      a.AttachmentLocation AS FileKey
     FROM attachment a
     JOIN ${linkTable} link ON a.AttachmentID = link.AttachmentID
-    WHERE link.${pkCol} = ${rid}
+    WHERE link.${pkCol} IN (${idList})
+    ORDER BY link.${pkCol}, a.AttachmentID
   `;
 
   const result = await query(sql);
-  if (result.rows.length === 0) return `No attachments found for ${tbl} ID ${rid}.`;
-
+  if (result.rows.length === 0) {
+    return recordIds.length === 1
+      ? `No attachments found for ${tbl} ID ${recordIds[0]}.`
+      : `No attachments found for any of ${recordIds.length} ${tbl} records.`;
+  }
   return formatTable(result.rows);
 }
 

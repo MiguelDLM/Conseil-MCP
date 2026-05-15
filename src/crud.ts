@@ -61,28 +61,47 @@ export async function getRecord(tableName: string, id: number): Promise<string> 
  * Supported ops: EQ, NE, GT, GTE, LT, LTE, LIKE, IN, BETWEEN, IS_NULL, IS_NOT_NULL.
  * IN takes an array of strings. BETWEEN takes [low, high].
  */
-type SearchFilterValue = string | { op: string; value?: any; high?: any; low?: any };
+type SearchFilterValue = string | number | boolean | { op: string; value?: any; high?: any; low?: any };
+
+/**
+ * Format a single value for SQL. Booleans → `1`/`0` (so BIT(1) columns like
+ * IsCurrent compare correctly); numbers → bare; everything else → quoted
+ * via `literal()`. The bit-field handling is essential: MariaDB's BIT(1)
+ * does NOT match the string `'true'`, only the numeric 1.
+ */
+function sqlValue(v: any): string {
+  if (v === null) return 'NULL';
+  if (typeof v === 'boolean') return v ? '1' : '0';
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  return literal(String(v));
+}
 
 function buildCondition(col: string, raw: SearchFilterValue): string {
   if (typeof raw === 'string') {
     return raw.includes('%') ? `${col} LIKE ${literal(raw)}` : `${col} = ${literal(raw)}`;
   }
+  if (typeof raw === 'boolean') {
+    return `${col} = ${raw ? 1 : 0}`;
+  }
+  if (typeof raw === 'number') {
+    return `${col} = ${raw}`;
+  }
   const op = String(raw.op || '').toUpperCase();
   switch (op) {
-    case 'EQ': return `${col} = ${literal(String(raw.value))}`;
-    case 'NE': return `${col} <> ${literal(String(raw.value))}`;
-    case 'GT': return `${col} > ${literal(String(raw.value))}`;
-    case 'GTE': return `${col} >= ${literal(String(raw.value))}`;
-    case 'LT': return `${col} < ${literal(String(raw.value))}`;
-    case 'LTE': return `${col} <= ${literal(String(raw.value))}`;
+    case 'EQ': return `${col} = ${sqlValue(raw.value)}`;
+    case 'NE': return `${col} <> ${sqlValue(raw.value)}`;
+    case 'GT': return `${col} > ${sqlValue(raw.value)}`;
+    case 'GTE': return `${col} >= ${sqlValue(raw.value)}`;
+    case 'LT': return `${col} < ${sqlValue(raw.value)}`;
+    case 'LTE': return `${col} <= ${sqlValue(raw.value)}`;
     case 'LIKE': return `${col} LIKE ${literal(String(raw.value))}`;
     case 'IN': {
       if (!Array.isArray(raw.value) || raw.value.length === 0) throw new Error(`IN value for ${col} must be a non-empty array.`);
-      return `${col} IN (${raw.value.map(v => literal(String(v))).join(', ')})`;
+      return `${col} IN (${raw.value.map(sqlValue).join(', ')})`;
     }
     case 'BETWEEN': {
       if (raw.low === undefined || raw.high === undefined) throw new Error(`BETWEEN on ${col} requires { low, high }.`);
-      return `${col} BETWEEN ${literal(String(raw.low))} AND ${literal(String(raw.high))}`;
+      return `${col} BETWEEN ${sqlValue(raw.low)} AND ${sqlValue(raw.high)}`;
     }
     case 'IS_NULL': return `${col} IS NULL`;
     case 'IS_NOT_NULL': return `${col} IS NOT NULL`;

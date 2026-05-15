@@ -12,8 +12,13 @@ export interface TableMetadata {
   className: string;
 }
 
-export async function listAllTables(): Promise<string> {
-  const result = await query("SHOW TABLES");
+/**
+ * List Specify tables. Without `pattern`, returns all ~250 names — that's
+ * expensive in tokens. Pass a SQL LIKE pattern like `"taxon%"` to scope.
+ */
+export async function listAllTables(pattern?: string): Promise<string> {
+  const sql = pattern ? `SHOW TABLES LIKE ${literal(pattern)}` : 'SHOW TABLES';
+  const result = await query(sql);
   return formatTable(result.rows);
 }
 

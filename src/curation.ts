@@ -542,6 +542,44 @@ export async function searchMorphosourceByTaxon(taxonName: string): Promise<stri
 }
 
 /**
+ * Batch taxon search on Morphosource. Per-name results are compacted into a
+ * single JSON map so the caller can iterate without making N tool calls.
+ *
+ * Output: { "Taxon A": { objects: <count>, media: <count>, top: [...] }, ... }
+ * `top` is a short summary (max 3 entries) — the caller can call
+ * `morphosource_search_taxon` for the full breakdown on any hit.
+ */
+export async function searchMorphosourceTaxaBatch(taxonNames: string[]): Promise<any> {
+  if (!Array.isArray(taxonNames) || taxonNames.length === 0) {
+    throw new Error('taxon_names must be a non-empty array.');
+  }
+  if (taxonNames.length > 50) {
+    throw new Error(`Refusing to batch ${taxonNames.length} taxon searches in one call (cap 50).`);
+  }
+
+  const entries = await Promise.all(taxonNames.map(async name => {
+    try {
+      const [objects, media] = await Promise.all([
+        searchMorphosourcePhysicalObjects(name),
+        searchMorphosourceMedia(name),
+      ]);
+      return [name, {
+        objects: objects.length,
+        media: media.length,
+        top: [
+          ...objects.slice(0, 2).map((o: any) => ({ kind: 'object', id: o.id, catalogNumber: o.catalog_number })),
+          ...media.slice(0, 2).map((m: any) => ({ kind: 'media', id: m.id, title: m.title })),
+        ],
+      }];
+    } catch (e: any) {
+      return [name, { error: e.message }];
+    }
+  }));
+
+  return Object.fromEntries(entries);
+}
+
+/**
  * Request a temporary download URL for Morphosource media.
  */
 export async function requestMorphosourceDownload(mediaId: string, useStatement: string): Promise<string> {

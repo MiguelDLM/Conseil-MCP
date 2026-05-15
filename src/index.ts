@@ -36,7 +36,7 @@ import { listSpecifyUsers, createSpecifyUser, getSystemHealth, deleteSpecifyUser
 import { browseAuthorityTree, getTaxonPath, getDescendantsByRank } from './authority.js';
 import { listAllTables, getTableFieldMetadata, getRelationships } from './schema.js';
 import { getAuditLogs, getAuditLogDetails } from './audit.js';
-import { listAttachments, renameAttachmentMetadata, linkExistingAttachment } from './assets.js';
+import { listAttachments, listAttachmentsBatch, renameAttachmentMetadata, linkExistingAttachment } from './assets.js';
 import { searchReferences } from './bibliography.js';
 import { addCitation, listCitations } from './citations.js';
 import { matchGbifTaxon, searchGbifOccurrences } from './external-gbif.js';
@@ -54,6 +54,7 @@ import {
   checkSpecimenOnMorphosource,
   checkSpecimenOnMorphosourceBatch,
   searchMorphosourceByTaxon,
+  searchMorphosourceTaxaBatch,
   requestMorphosourceDownload
   } from './curation.js';
 import { listFormationsInInterval } from './external-paleo.js';
@@ -112,7 +113,9 @@ function createServer() {
     server.tool(name, desc, schema, async (args: any) => {
       try {
         const result = await fn(args);
-        const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+        // Compact JSON serialization saves 25-40% tokens vs pretty-printed.
+        // MCP clients format the payload themselves; indents are dead weight.
+        const text = typeof result === 'string' ? result : JSON.stringify(result);
         return { content: [{ type: 'text' as const, text }] };
       } catch (e: any) {
         return { content: [{ type: 'text' as const, text: 'Error: ' + e.message }], isError: true };
@@ -122,31 +125,16 @@ function createServer() {
 
   // ─── Meta / Diagnostics ───────────────────────────────────────────────────
   register('meta_ping', 'Health check: returns pong', {}, () => 'pong');
-  register('meta_config', 'Show runtime config (secrets redacted)', {}, () => {
-    return JSON.stringify({
-      mode: config.mode,
-      kubectl: {
-        namespace: config.kubectl.namespace,
-        mariadbPod: config.kubectl.mariadbPod,
-        webPod: config.kubectl.webPod,
-        webContainer: config.kubectl.webContainer,
-      },
-      db: {
-        host: config.db.host,
-        port: config.db.port,
-        user: config.db.user,
-        database: config.db.database,
-        passwordSet: Boolean(config.db.password),
-      },
-      specify: {
-        url: config.specify.url,
-        collectionId: config.specify.collectionId,
-        userId: config.specify.userId,
-        username: config.specify.username,
-        passwordSet: Boolean(config.specify.password),
-      },
-    }, null, 2);
-  });
+  register('meta_config', 'Runtime config (secrets redacted)', {}, () => ({
+    mode: config.mode,
+    kubectl: {
+      namespace: config.kubectl.namespace,
+      mariadbPod: config.kubectl.mariadbPod,
+      webPod: config.kubectl.webPod,
+    },
+    db: { host: config.db.host, port: config.db.port, database: config.db.database },
+    specify: { url: config.specify.url, collectionId: config.specify.collectionId },
+  }));
   register('meta_health', 'Check Specify 7 health (DB + Celery)', {}, () => getSystemHealth());
 
   // ─── Specify: Admin ───────────────────────────────────────────────────────
@@ -185,7 +173,9 @@ function createServer() {
     (a: any) => deleteRecord(a.table_name, a.record_id, a.confirm));
 
   // ─── Specify: Schema introspection ────────────────────────────────────────
-  register('specify_list_tables', 'List all Specify tables', {}, () => listAllTables());
+  register('specify_list_tables', 'List Specify tables (optional SQL LIKE pattern, e.g. "taxon%" or "%attachment%")',
+    { pattern: z.string().optional() },
+    (a: any) => listAllTables(a.pattern));
   register('specify_describe_table', 'Describe fields of a table',
     { table_name: z.string() },
     (a: any) => getTableFieldMetadata(a.table_name));
@@ -252,6 +242,9 @@ function createServer() {
   register('specify_list_attachments', 'List attachments linked to a record',
     { table_name: z.string(), record_id: z.number() },
     (a: any) => listAttachments(a.table_name, a.record_id));
+  register('specify_list_attachments_batch', 'Attachments for many records in one query (cap 500)',
+    { table_name: z.string(), record_ids: z.array(z.number()).max(500) },
+    (a: any) => listAttachmentsBatch(a.table_name, a.record_ids));
   register('specify_rename_attachment', 'Update attachment Title metadata',
     { attachment_id: z.number(), new_title: z.string() },
     (a: any) => renameAttachmentMetadata(a.attachment_id, a.new_title));
@@ -278,9 +271,9 @@ function createServer() {
 
   // ─── Specify: ViewSets ────────────────────────────────────────────────────
   register('specify_list_viewsets', 'List UI ViewSets', {}, () => listViewSets());
-  register('specify_viewset_xml', 'Get ViewSet XML by numeric viewSetId',
-    { viewset_id: z.number().int() },
-    (a: any) => getViewSetXml(a.viewset_id));
+  register('specify_viewset_xml', 'Get ViewSet XML (truncated to max_chars; pass 0 for full)',
+    { viewset_id: z.number().int(), max_chars: z.number().int().optional().describe('Default 4000. 0 = full.') },
+    (a: any) => getViewSetXml(a.viewset_id, a.max_chars ?? 4000));
   register('specify_update_viewset', 'Replace ViewSet XML (by numeric viewSetDataId)',
     { viewset_data_id: z.number().int(), new_xml: z.string() },
     (a: any) => updateViewSetXml(a.viewset_data_id, a.new_xml));
@@ -358,6 +351,9 @@ function createServer() {
   register('morphosource_search_taxon', 'Search Morphosource media+objects by taxon name',
     { taxon_name: z.string() },
     (a: any) => searchMorphosourceByTaxon(a.taxon_name));
+  register('morphosource_search_taxa_batch', 'Batch search up to 50 taxa on Morphosource in one call (returns counts + 2 top hits per taxon)',
+    { taxon_names: z.array(z.string()).max(50) },
+    (a: any) => searchMorphosourceTaxaBatch(a.taxon_names));
   register('morphosource_request_download', 'Request a temporary download URL for a Morphosource media item',
     { media_id: z.string(), use_statement: z.string().describe('Min 50 chars (Morphosource policy)') },
     (a: any) => requestMorphosourceDownload(a.media_id, a.use_statement));

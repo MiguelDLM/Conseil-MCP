@@ -53,7 +53,11 @@ print(json.dumps(results))
   return JSON.parse(json) as ViewSetInfo[];
 }
 
-export async function getViewSetXml(viewSetId: number): Promise<string | null> {
+/**
+ * Internal: fetch full XML body (no truncation). Used by getAvailableViews
+ * and getViewDefinition which need to parse the whole document.
+ */
+async function fetchViewSetXmlRaw(viewSetId: number): Promise<string | null> {
   const vsId = safeInt(viewSetId, 'viewSetId');
   const script = `
 from specifyweb.specify.models import Spviewsetobj
@@ -75,6 +79,19 @@ else:
   const endIdx = stdout.lastIndexOf('\nDATA_END');
   if (startIdx === -1) return null;
   return stdout.slice(startIdx + 11, endIdx);
+}
+
+/**
+ * Get ViewSet XML. ViewSets often run to 100KB+ — by default we truncate to
+ * `maxChars` (default 4000) and append a `[truncated ...]` marker. Pass 0 to
+ * return the full document (only do this if you really need it).
+ */
+export async function getViewSetXml(viewSetId: number, maxChars: number = 4000): Promise<string | null> {
+  const xml = await fetchViewSetXmlRaw(viewSetId);
+  if (xml === null) return null;
+  if (maxChars <= 0 || xml.length <= maxChars) return xml;
+  return xml.slice(0, maxChars) +
+    `\n<!-- [truncated ${xml.length - maxChars} chars; call again with max_chars: 0 for full XML, or use specify_list_views / specify_get_view to scope] -->`;
 }
 
 export async function updateViewSetXml(viewSetDataId: number, newXml: string): Promise<void> {
@@ -121,7 +138,7 @@ print('ok:', cursor.rowcount)
 }
 
 export async function getAvailableViews(viewSetId: number): Promise<string[]> {
-  const xml = await getViewSetXml(viewSetId);
+  const xml = await fetchViewSetXmlRaw(viewSetId);
   if (!xml) return [];
 
   const views: string[] = [];
@@ -134,7 +151,7 @@ export async function getAvailableViews(viewSetId: number): Promise<string[]> {
 }
 
 export async function getViewDefinition(viewSetId: number, viewName: string): Promise<string | null> {
-  const xml = await getViewSetXml(viewSetId);
+  const xml = await fetchViewSetXmlRaw(viewSetId);
   if (!xml) return null;
 
   const lines = xml.split('\n');
