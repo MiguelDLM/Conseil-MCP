@@ -74,27 +74,185 @@ export async function curateTaxaBatch(taxa: {id: number, name: string}[]): Promi
 
 // ─── PALEO CURATION (PBDB) ──────────────────────────────────────────────────
 
+/**
+ * Normalize a taxon name for external API lookup.
+ *
+ * Specify's Taxon table sometimes has malformed `FullName` entries where the
+ * genus is duplicated (e.g. "Canis Canis latrans" instead of "Canis latrans").
+ * This happens when the genus row's `Name` already contains the genus epithet
+ * and Specify rebuilds the FullName by concatenating parent.name + child.name.
+ *
+ * We dedupe consecutive identical tokens. Also, for species-rank (≥ 220) we
+ * prefer the local `Name` if it already looks like a valid binomial (two
+ * tokens) — that's the canonical form most external APIs expect.
+ */
+function normalizeTaxonName(fullName: string | null | undefined, name: string | null | undefined, rankId?: number): string {
+  const candidate = fullName || name || '';
+  const tokens = candidate.trim().split(/\s+/);
+  const deduped: string[] = [];
+  for (const t of tokens) {
+    if (deduped.length === 0 || deduped[deduped.length - 1].toLowerCase() !== t.toLowerCase()) {
+      deduped.push(t);
+    }
+  }
+  let cleaned = deduped.join(' ');
+
+  // For species and below (rank >= 220), prefer `Name` if it's a proper binomial
+  // and the deduped FullName still looks wrong (more than 3 tokens).
+  if (rankId !== undefined && rankId >= 220 && name && name.split(/\s+/).length === 2 && cleaned.split(/\s+/).length > 2) {
+    cleaned = name;
+  }
+  return cleaned;
+}
+
+/**
+ * Lookup a Specify taxon row on PBDB.
+ *
+ * Field-mapping note: PBDB's `vocab=pbdb` flag (which matchPbdbTaxon sends)
+ * actually returns the LONG-form names — `taxon_name`, `taxon_rank`,
+ * `is_extant`, `accepted_name`, `accepted_no`, `orig_no`. Without the flag
+ * you get 3-letter codes (`nam`, `rnk`, `ext`). Read the long-form names.
+ */
 export async function curateTaxonWithPbdb(taxonId: number): Promise<string> {
-  const local = await queryOne(`SELECT FullName, Name FROM taxon WHERE TaxonID = ${taxonId}`);
+  const local = await queryOne(`SELECT FullName, Name, RankID FROM taxon WHERE TaxonID = ${taxonId}`);
   if (!local) return `Taxon ID ${taxonId} not found in Specify.`;
 
-  const matches = await matchPbdbTaxon(local.FullName || local.Name!);
-  if (matches.length === 0) return `No matches found in PBDB for "${local.FullName || local.Name}".`;
-
-  const match = matches[0];
-  const report = [
-    `=== PBDB Report for "${local.FullName || local.Name}" (ID=${taxonId}) ===`,
-    `PBDB Name: ${match.nam}`,
-    `Status: ${match.tdf === 'valid' ? 'ACCEPTED' : 'SYNONYM'}`,
-    `Rank: ${match.rnk}`,
-    `Extant: ${match.ext === '1' ? 'Yes' : 'No'}`
-  ];
-
-  if (match.acc && match.acc !== match.oid) {
-    report.push(`Accepted Name ID: ${match.acc}`);
+  const rank = local.RankID ? parseInt(local.RankID) : undefined;
+  const lookupName = normalizeTaxonName(local.FullName, local.Name, rank);
+  const matches = await matchPbdbTaxon(lookupName);
+  if (matches.length === 0) {
+    const raw = local.FullName || local.Name;
+    const hint = raw !== lookupName ? ` (normalized from "${raw}")` : '';
+    return `No matches found in PBDB for "${lookupName}"${hint}.`;
   }
 
-  return report.join('\n');
+  const m = matches[0];
+  const acceptedNo = m.accepted_no ?? m.acc;
+  const origNo = m.orig_no ?? m.oid;
+  const isSynonym = acceptedNo && origNo && acceptedNo !== origNo;
+  const isExtant = m.is_extant === 'extant' || m.ext === '1';
+
+  const lines = [
+    `=== PBDB Report for "${lookupName}" (Specify TaxonID=${taxonId}) ===`,
+    `PBDB Name: ${m.taxon_name ?? m.nam ?? '(unknown)'}`,
+    `Rank: ${m.taxon_rank ?? m.rnk ?? '(unknown)'}`,
+    `Status: ${isSynonym ? 'SYNONYM' : 'ACCEPTED'}`,
+    `Extant: ${isExtant ? 'Yes' : 'No'}`,
+    `Occurrences in PBDB: ${m.n_occs ?? m.noc ?? 0}`,
+  ];
+  if (isSynonym) {
+    lines.push(`Accepted Name: ${m.accepted_name ?? '(unknown)'} (PBDB ID ${acceptedNo})`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Batch PBDB lookup for many Specify taxon rows at once.
+ *
+ * Replaces N+1 calls to `pbdb_match_taxon` when the LLM is auditing a list
+ * of taxa. Returns a compact JSON: { taxonId: { name, rank, status, extant,
+ * acceptedName? } | { error } }.
+ */
+export async function curateTaxaWithPbdbBatch(taxonIds: number[]): Promise<any> {
+  if (!Array.isArray(taxonIds) || taxonIds.length === 0) {
+    throw new Error('taxon_ids must be a non-empty array.');
+  }
+  if (taxonIds.length > 200) {
+    throw new Error(`Refusing batch of ${taxonIds.length} taxa (cap 200).`);
+  }
+
+  const idList = taxonIds.map(n => parseInt(String(n))).filter(Number.isFinite).join(',');
+  const rows = (await query(`SELECT TaxonID, FullName, Name, RankID FROM taxon WHERE TaxonID IN (${idList})`)).rows;
+
+  // Build a {taxonId -> lookupName} map and dedupe lookups.
+  const lookupByTaxon: Record<string, string> = {};
+  const uniqNames = new Set<string>();
+  for (const r of rows) {
+    const rank = r.RankID ? parseInt(r.RankID) : undefined;
+    const n = normalizeTaxonName(r.FullName, r.Name, rank);
+    lookupByTaxon[r.TaxonID!] = n;
+    if (n) uniqNames.add(n);
+  }
+
+  // Query PBDB for each unique name (parallel, capped concurrency).
+  const cache: Record<string, any> = {};
+  const names = [...uniqNames];
+  const concurrency = 6;
+  for (let i = 0; i < names.length; i += concurrency) {
+    const chunk = names.slice(i, i + concurrency);
+    await Promise.all(chunk.map(async n => {
+      try {
+        const matches = await matchPbdbTaxon(n);
+        cache[n] = matches[0] ?? null;
+      } catch (e: any) {
+        cache[n] = { error: e.message };
+      }
+    }));
+  }
+
+  const out: Record<string, any> = {};
+  for (const r of rows) {
+    const name = lookupByTaxon[r.TaxonID!];
+    const m = cache[name];
+    if (!m) { out[r.TaxonID!] = { name, match: null }; continue; }
+    if (m.error) { out[r.TaxonID!] = { name, error: m.error }; continue; }
+    const acceptedNo = m.accepted_no ?? m.acc;
+    const origNo = m.orig_no ?? m.oid;
+    out[r.TaxonID!] = {
+      name,
+      pbdbName: m.taxon_name ?? m.nam,
+      rank: m.taxon_rank ?? m.rnk,
+      status: acceptedNo && origNo && acceptedNo !== origNo ? 'SYNONYM' : 'ACCEPTED',
+      extant: m.is_extant === 'extant' || m.ext === '1',
+      occurrences: m.n_occs ?? m.noc ?? 0,
+      ...(m.accepted_name && acceptedNo !== origNo ? { acceptedName: m.accepted_name } : {}),
+    };
+  }
+  return out;
+}
+
+/**
+ * Audit Specify taxonomy data quality. Surfaces FullName entries with
+ * suspicious patterns — currently: duplicate consecutive tokens
+ * ("Canis Canis latrans") and FullName ≠ "Genus Species" for species-rank rows.
+ */
+export async function auditTaxonomyQuality(rootTaxonId?: number): Promise<any> {
+  const root = rootTaxonId ? parseInt(String(rootTaxonId)) : null;
+  const scope = root
+    ? `AND NodeNumber BETWEEN (SELECT NodeNumber FROM taxon WHERE TaxonID = ${root})
+                          AND (SELECT HighestChildNodeNumber FROM taxon WHERE TaxonID = ${root})`
+    : '';
+  const sql = `
+    SELECT TaxonID, FullName, Name, RankID
+    FROM taxon
+    WHERE FullName IS NOT NULL AND TRIM(FullName) <> ''
+      ${scope}
+  `;
+  const rows = (await query(sql)).rows;
+
+  const duplicatePrefix: any[] = [];
+  for (const r of rows) {
+    const tokens = (r.FullName || '').trim().split(/\s+/);
+    for (let i = 1; i < tokens.length; i++) {
+      if (tokens[i].toLowerCase() === tokens[i - 1].toLowerCase()) {
+        duplicatePrefix.push({
+          taxonId: parseInt(r.TaxonID!),
+          fullName: r.FullName,
+          name: r.Name,
+          rankId: parseInt(r.RankID ?? '0'),
+          suggested: normalizeTaxonName(r.FullName, r.Name, parseInt(r.RankID ?? '0')),
+        });
+        break;
+      }
+    }
+  }
+  return {
+    totalScanned: rows.length,
+    duplicatePrefixCount: duplicatePrefix.length,
+    duplicatePrefix: duplicatePrefix.slice(0, 100),
+    truncated: duplicatePrefix.length > 100,
+    fixSuggestion: `Run \`specify_update_row\` for each entry setting FullName=<suggested>. Or fix the underlying Specify Taxon tree definition (the issue is usually a genus row whose Name field contains the genus epithet AND Specify is concatenating it into descendant FullNames).`,
+  };
 }
 
 /**

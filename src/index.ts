@@ -44,6 +44,8 @@ import {
   curateTaxonWithGbif,
   curateTaxaBatch,
   curateTaxonWithPbdb,
+  curateTaxaWithPbdbBatch,
+  auditTaxonomyQuality,
   curateGeologicTime,
   curateStratigraphy,
   verifyTaxonOccurrence,
@@ -317,9 +319,15 @@ function createServer() {
     }));
 
   // ─── PBDB ─────────────────────────────────────────────────────────────────
-  register('pbdb_match_taxon', 'Match a Specify taxon row against PBDB (fossil DB)',
+  register('pbdb_match_taxon', 'Match a Specify taxon row against PBDB (fossil DB); reports extant/extinct + accepted/synonym',
     { taxon_id: z.number() },
     (a: any) => curateTaxonWithPbdb(a.taxon_id));
+  register('pbdb_match_batch', 'Batch PBDB lookup for many Specify taxon rows (cap 200, parallel)',
+    { taxon_ids: z.array(z.number()).max(200) },
+    (a: any) => curateTaxaWithPbdbBatch(a.taxon_ids));
+  register('specify_audit_taxonomy_quality', 'Find malformed Specify FullName entries (duplicate prefix etc.); optionally scoped under a root_taxon_id',
+    { root_taxon_id: z.number().optional() },
+    (a: any) => auditTaxonomyQuality(a.root_taxon_id));
   register('pbdb_verify_occurrence', 'Verify whether a taxon has been reported in a formation',
     { taxon_name: z.string(), stratum_name: z.string() },
     (a: any) => verifyTaxonOccurrence(a.taxon_name, a.stratum_name));
