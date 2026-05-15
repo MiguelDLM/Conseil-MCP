@@ -53,6 +53,10 @@ export async function renameAttachmentMetadata(attachmentId: number, newTitle: s
  * Note: Actual file upload requires a multi-part POST to the Asset Server
  * and then creating the database records. This tool creates the DB records
  * assuming the file is already tracked or provides the SQL link.
+ *
+ * The link tables (collectionobjectattachment, taxonattachment, etc.) all
+ * require `Ordinal` (NOT NULL, no default). For collectionobjectattachment
+ * we also need `CollectionMemberID` from the parent CO.
  */
 export async function linkExistingAttachment(tableName: string, recordId: number, attachmentId: number): Promise<string> {
   const tbl = safeIdent(tableName, 'table name');
@@ -61,17 +65,32 @@ export async function linkExistingAttachment(tableName: string, recordId: number
   const linkTable = safeIdent(`${tbl.toLowerCase()}attachment`, 'link table');
   const pkCol = safeIdent(await getPrimaryKeyColumn(tbl), 'primary key column');
 
-  // Verify that both referenced rows exist to avoid dangling FKs.
+  // Verify both endpoints exist to avoid dangling FKs.
   const attachment = await queryOne(`SELECT AttachmentID FROM attachment WHERE AttachmentID = ${aid}`);
   if (!attachment) throw new Error(`Attachment ${aid} does not exist.`);
   const parent = await queryOne(`SELECT ${pkCol} FROM ${tbl} WHERE ${pkCol} = ${rid}`);
   if (!parent) throw new Error(`Record ${tbl}#${rid} does not exist.`);
 
+  // Next ordinal slot for the parent record.
+  const ordRow = await queryOne(`SELECT COALESCE(MAX(Ordinal), -1) + 1 AS next FROM ${linkTable} WHERE ${pkCol} = ${rid}`);
+  const nextOrdinal = parseInt((ordRow?.next ?? '0').toString());
+
+  // collectionobjectattachment also needs CollectionMemberID; copy it from the CO.
+  let extraCols = '';
+  let extraVals = '';
+  if (tbl.toLowerCase() === 'collectionobject') {
+    const co = await queryOne(`SELECT CollectionMemberID FROM collectionobject WHERE CollectionObjectID = ${rid}`);
+    const memberId = co?.CollectionMemberID;
+    if (!memberId) throw new Error(`Cannot resolve CollectionMemberID for collectionobject#${rid}.`);
+    extraCols = ', CollectionMemberID';
+    extraVals = `, ${memberId}`;
+  }
+
   const sql = `
-    INSERT INTO ${linkTable} (TimestampCreated, TimestampModified, version, AttachmentID, ${pkCol})
-    VALUES (NOW(), NOW(), 0, ${aid}, ${rid})
+    INSERT INTO ${linkTable} (TimestampCreated, TimestampModified, version, AttachmentID, ${pkCol}, Ordinal${extraCols})
+    VALUES (NOW(), NOW(), 0, ${aid}, ${rid}, ${nextOrdinal}${extraVals})
   `;
 
   await execute(sql);
-  return `Linked attachment ${aid} to ${tbl} ${rid}.`;
+  return `Linked attachment ${aid} to ${tbl}#${rid} at ordinal ${nextOrdinal}.`;
 }

@@ -147,9 +147,9 @@ function createServer() {
 
   // ─── Specify: Admin ───────────────────────────────────────────────────────
   register('specify_list_users', 'List all Specify users', {}, () => listSpecifyUsers());
-  register('specify_create_user', 'Create new Specify user (with Agent linkage)',
-    { username: z.string(), password: z.string(), email: z.string(), firstName: z.string(), lastName: z.string(), collectionId: z.number() },
-    (a: any) => createSpecifyUser(a.username, a.password, a.email, a.firstName, a.lastName, a.collectionId));
+  register('specify_create_user', 'Create new Specify user (with Agent linkage). Pass makeAdmin=true to also grant the % resource policy.',
+    { username: z.string(), password: z.string(), email: z.string(), firstName: z.string(), lastName: z.string(), collectionId: z.number(), makeAdmin: z.boolean().optional() },
+    (a: any) => createSpecifyUser(a.username, a.password, a.email, a.firstName, a.lastName, a.collectionId, a.makeAdmin ?? false));
   register('specify_delete_user', 'Delete or deactivate user safely',
     { username: z.string() },
     (a: any) => deleteSpecifyUser(a.username));

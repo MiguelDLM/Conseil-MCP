@@ -46,90 +46,101 @@ print("USERS_END")
 }
 
 export async function createSpecifyUser(
-  username: string, 
-  password: string, 
-  email: string, 
-  firstName: string, 
-  lastName: string, 
-  collectionId: number
+  username: string,
+  password: string,
+  email: string,
+  firstName: string,
+  lastName: string,
+  collectionId: number,
+  makeAdmin: boolean = false,
 ): Promise<string> {
+  // In Specify 7, SpecifyUserManager.create_user() raises NotImplementedError.
+  // The canonical pattern (taken from specifyweb.backend.setup_tool.api) is:
+  //   1. Specifyuser.objects.create(name=..., password=<plaintext>, ...)
+  //   2. user.set_password(user.password)   # Specify-specific encryption
+  //   3. user.save()
+  //   4. Agent.objects.create(agenttype=1, division=<from collection>, specifyuser=user, ...)
+  //   5. Optionally UserPolicy.objects.create(resource='%', action='%') for admins.
   const script = `
 import json
-from django.contrib.auth import get_user_model
-from specifyweb.specify.models import Specifyuser, Agent
+from specifyweb.specify.models import Specifyuser, Agent, Collection
 from django.db import transaction
 
-User = get_user_model()
 username = ${JSON.stringify(username)}
 password = ${JSON.stringify(password)}
 email = ${JSON.stringify(email)}
 first_name = ${JSON.stringify(firstName)}
 last_name = ${JSON.stringify(lastName)}
 collection_id = ${collectionId}
+make_admin = ${makeAdmin ? 'True' : 'False'}
 
 try:
     with transaction.atomic():
-        # 1. Check if user already exists
-        username_field = getattr(User, 'USERNAME_FIELD', 'username')
-        if User.objects.filter(**{username_field: username}).exists():
-            print(json.dumps({"error": f"User '{username}' already exists in Auth"}))
-            exit()
-            
-        # 2. Create Django auth user (this is Specifyuser itself in unified mode)
+        if Specifyuser.objects.filter(name=username).exists():
+            print(json.dumps({"error": f"User '{username}' already exists."}))
+            raise SystemExit(0)
+
+        # 1. Create the Specifyuser row directly (manager.create_user is disabled).
         user_kwargs = {
-            username_field: username,
-            'email': email,
-            'password': password
+            'name': username,
+            'password': password,       # plaintext; set_password() re-encrypts below
+            'usertype': 'Manager',
+            'isloggedin': False,
+            'isloggedinreport': False,
         }
-        user = User.objects.create_user(**user_kwargs)
-        user.first_name = first_name
-        user.last_name = last_name
-        
-        # 3. Handle Unified vs Legacy logic for Specifyuser
-        specify_user_id = None
-        is_unified = (User == Specifyuser)
-        
-        if is_unified:
-            if hasattr(user, 'usertype'):
-                user.usertype = 'manager'
-            if hasattr(user, 'isloggedin'):
-                user.isloggedin = False
-            if hasattr(user, 'isloggedinreport'):
-                user.isloggedinreport = False
-            user.save()
-            specify_user_id = user.id
-            su_ref = user
-        else:
-            user.save()
-            su_data = {
-                'name': username,
-                'email': email,
-                'usertype': 'manager',
-                'isloggedin': False,
-                'isloggedinreport': False
-            }
-            # Link to Django User if the field exists
-            if 'user' in [f.name for f in Specifyuser._meta.get_fields()]:
-                su_data['user'] = user
-                
-            su = Specifyuser.objects.create(**su_data)
-            specify_user_id = su.id
-            su_ref = su
+        if email:
+            user_kwargs['email'] = email
+        new_user = Specifyuser.objects.create(**user_kwargs)
 
-        # 4. Create Agent and link to Specifyuser
-        agent_data = {
-            'agenttype': 1,
-            'firstname': first_name,
-            'lastname': last_name,
-            'email': email
+        # 2. Encrypt the password using Specify's custom scheme.
+        new_user.set_password(new_user.password)
+        new_user.save()
+
+        # 3. Resolve the Division for the new Agent (Agent.division is NOT NULL).
+        try:
+            coll = Collection.objects.get(pk=collection_id)
+            division = coll.discipline.division
+        except Collection.DoesNotExist:
+            print(json.dumps({"error": f"Collection #{collection_id} not found."}))
+            raise SystemExit(0)
+
+        # 4. Create the Agent and link it back to the new user.
+        agent_kwargs = {
+            'agenttype': 1,  # Person
+            'lastname': last_name or username,
+            'specifyuser': new_user,
+            'division': division,
         }
-        # Based on schema, Agent has 'specifyuser' field pointing to Specifyuser
-        if 'specifyuser' in [f.name for f in Agent._meta.get_fields()]:
-            agent_data['specifyuser'] = su_ref
-            
-        agent = Agent.objects.create(**agent_data)
+        if first_name:
+            agent_kwargs['firstname'] = first_name
+        if email:
+            agent_kwargs['email'] = email
+        agent = Agent.objects.create(**agent_kwargs)
 
-        print(json.dumps({"success": True, "specifyUserId": specify_user_id, "agentId": agent.id}))
+        # 5. Optional admin grant — only if explicitly requested.
+        if make_admin:
+            try:
+                from specifyweb.permissions.models import UserPolicy
+                UserPolicy.objects.create(
+                    specifyuser=new_user,
+                    collection=None,
+                    resource='%',
+                    action='%'
+                )
+            except Exception as e:
+                # Permissions module may not be exposed in every Specify build;
+                # surface the user creation success but warn.
+                print(json.dumps({
+                    "success": True,
+                    "specifyUserId": new_user.id,
+                    "agentId": agent.id,
+                    "adminGrantWarning": f"User created but admin grant failed: {e}"
+                }))
+                raise SystemExit(0)
+
+        print(json.dumps({"success": True, "specifyUserId": new_user.id, "agentId": agent.id}))
+except SystemExit:
+    raise
 except Exception as e:
     import traceback
     print(json.dumps({"error": str(e), "traceback": traceback.format_exc()}))
@@ -186,69 +197,61 @@ print(json.dumps(health, indent=2))
 }
 
 export async function deleteSpecifyUser(username: string): Promise<string> {
+  // Specify enforces a business rule
+  // (specifyweb.backend.businessrules.rules.agent_rules.agent_delete_blocked_by_related_specifyuser)
+  // that prevents deleting an Agent while it still references a Specifyuser.
+  // Correct order: detach Agent.specifyuser → delete Specifyuser → optionally
+  // delete Agent (skip if Agent has historical FKs from determinations,
+  // collectionobjects, etc.).
   const script = `
 import json
-from django.contrib.auth import get_user_model
 from specifyweb.specify.models import Specifyuser, Agent
 from django.db import transaction
 from django.db.models import ProtectedError
 
-User = get_user_model()
 username = ${JSON.stringify(username)}
-username_field = getattr(User, 'USERNAME_FIELD', 'username')
 
 try:
     with transaction.atomic():
         try:
-            user = User.objects.get(**{username_field: username})
-        except User.DoesNotExist:
+            user = Specifyuser.objects.get(name=username)
+        except Specifyuser.DoesNotExist:
             print(json.dumps({"error": f"User '{username}' not found"}))
-            exit()
-            
-        is_unified = (User == Specifyuser)
-        
-        # In legacy mode, we need to find the Specifyuser as well
-        su = None
-        if not is_unified:
-            try:
-                su = Specifyuser.objects.get(name=username)
-            except Specifyuser.DoesNotExist:
-                pass
-                
-        # Agent might be linked to user or specifyuser
-        agent = None
-        try:
-            agent = Agent.objects.get(specifyuser=user if is_unified else su)
-        except (Agent.DoesNotExist, ValueError):
-            pass
+            raise SystemExit(0)
 
-        # Try to delete the Agent if it exists. If it has historical records, this will fail.
-        agent_deleted = False
-        if agent:
-            try:
-                agent.delete()
-                agent_deleted = True
-            except ProtectedError:
-                pass
-            except Exception as e:
-                # Some other DB integrity error
-                if 'foreign key constraint' in str(e).lower() or 'integrityerror' in type(e).__name__.lower():
-                    pass
-                else:
-                    raise e
-                    
-        # Now delete the user records
-        if not is_unified and su:
-            su.delete()
-            
+        # Collect agents that reference this user.
+        agents = list(Agent.objects.filter(specifyuser=user))
+
+        # Detach every agent so the user can be deleted cleanly.
+        for ag in agents:
+            ag.specifyuser = None
+            ag.save()
+
+        # Delete the user (cascades into UserPolicy, SpAppResourceDir, etc.).
         user.delete()
-        
-        status_msg = f"User '{username}' successfully deleted."
-        if agent and not agent_deleted:
-            status_msg = f"User '{username}' login credentials and profile deleted. The Agent record was preserved because it has historical data linked to it."
-            
-        print(json.dumps({"success": True, "message": status_msg}))
 
+        # Try to delete each (now-detached) agent. Will fail with ProtectedError
+        # if the agent has historical references (determinations, cataloger,
+        # etc.) — in that case we keep the agent record for data integrity.
+        kept_agents = []
+        deleted_agents = []
+        for ag in agents:
+            try:
+                ag.delete()
+                deleted_agents.append(ag.id)
+            except (ProtectedError, Exception) as e:
+                kept_agents.append({"agentId": ag.id, "reason": str(e)[:120]})
+
+        msg = f"User '{username}' deleted."
+        if deleted_agents:
+            msg += f" Agents removed: {deleted_agents}."
+        if kept_agents:
+            msg += f" Agents preserved (historical FKs): {[a['agentId'] for a in kept_agents]}."
+
+        print(json.dumps({"success": True, "message": msg, "deletedAgents": deleted_agents, "keptAgents": kept_agents}))
+
+except SystemExit:
+    raise
 except Exception as e:
     import traceback
     print(json.dumps({"error": str(e), "traceback": traceback.format_exc()}))

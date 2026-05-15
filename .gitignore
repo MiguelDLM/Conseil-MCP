@@ -22,3 +22,5 @@ npm-debug.log*
 context/*
 !context/schema_localization_en.json
 !context/table_ids.json
+mcp-client-config.json
+test-login.js
