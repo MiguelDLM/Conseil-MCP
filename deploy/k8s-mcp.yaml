@@ -1,0 +1,265 @@
+# Conseil MCP — Kubernetes Deployment Template
+# ═══════════════════════════════════════════════════
+#
+# Quick Start:
+#   1. Copy this file:  cp k8s-mcp.yaml deploy/k8s-mcp-local.yaml
+#   2. Edit ONLY the <CHANGE_ME> values in the copy
+#   3. Build & push your image (or use hostPath for dev)
+#   4. Apply:  kubectl apply -f deploy/k8s-mcp-local.yaml
+#
+# The file deploy/k8s-mcp-local.yaml is gitignored so your secrets stay local.
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: specify7
+
+---
+# ┌─────────────────────────────────────────────────────────┐
+# │  ConfigMap — Non-sensitive configuration                │
+# │  Edit these values for your institution                 │
+# └─────────────────────────────────────────────────────────┘
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conseil-config
+  namespace: specify7
+data:
+  SPECIFY_CONNECTION_MODE: "kubectl"      # Options: direct, kubectl, docker
+  SPECIFY_URL: "http://specify7-web"      # Internal K8s service URL for Specify 7
+  SPECIFY_K8S_NAMESPACE: "specify7"
+  SPECIFY_K8S_WEB_POD: "deploy/specify7-web"
+  SPECIFY_K8S_MARIADB_POD: "mariadb-0"
+  SPECIFY_DB_HOST: "mariadb"
+  SPECIFY_DB_NAME: "specify"
+  SPECIFY_DB_USER: "master"
+  SPECIFY_USERNAME: "<CHANGE_ME>"         # Your Specify 7 admin username
+  BHL_API_KEY: "<CHANGE_ME>"              # Optional: Your BHL API Key
+  MORPHOSOURCE_API_KEY: ""                # Optional: Your Morphosource API Key
+  ZOTERO_USER_ID: "<CHANGE_ME>"           # Your Zotero User ID
+  WEBDAV_URL: "https://your-nextcloud.com/remote.php/dav/files/user/zotero/"
+  ALLOWED_ORIGINS: "*"                    # Comma-separated list (e.g. "https://claude.ai,https://miguelblog"). Use "*" only for dev.
+  SESSION_IDLE_TTL_SECONDS: "3600"        # Idle MCP session cleanup interval
+
+---
+# ┌─────────────────────────────────────────────────────────┐
+# │  Secret — Sensitive credentials                         │
+# │  ⚠️ NEVER commit real values to git                     │
+# └─────────────────────────────────────────────────────────┘
+apiVersion: v1
+kind: Secret
+metadata:
+  name: conseil-secrets
+  namespace: specify7
+type: Opaque
+stringData:
+  MCP_API_KEY: "<CHANGE_ME>"              # Key clients use to connect to the MCP
+  SPECIFY_PASSWORD: "<CHANGE_ME>"         # Specify 7 admin password
+  SPECIFY_DB_PASSWORD: "<CHANGE_ME>"      # MariaDB password
+  ZOTERO_API_KEY: "<CHANGE_ME>"           # Zotero API Key
+  WEBDAV_USER: "<CHANGE_ME>"              # Nextcloud username
+  WEBDAV_PASSWORD: "<CHANGE_ME>"          # Nextcloud app password
+
+---
+# RBAC — Allows the MCP pod to exec into other pods (for kubectl mode)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: conseil-sa
+  namespace: specify7
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: conseil-pod-exec
+  namespace: specify7
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/exec", "pods/log"]
+  verbs: ["get", "list", "create"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: conseil-pod-exec
+  namespace: specify7
+subjects:
+- kind: ServiceAccount
+  name: conseil-sa
+  namespace: specify7
+roleRef:
+  kind: Role
+  name: conseil-pod-exec
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ┌─────────────────────────────────────────────────────────┐
+# │  Deployment                                             │
+# │  Option A: Use a pre-built Docker image (recommended)   │
+# │  Option B: Use hostPath to mount source code (dev)      │
+# └─────────────────────────────────────────────────────────┘
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conseil-mcp
+  namespace: specify7
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: conseil-mcp
+  template:
+    metadata:
+      labels:
+        app: conseil-mcp
+    spec:
+      serviceAccountName: conseil-sa
+      containers:
+      - name: mcp
+        # ── Option A: Pre-built image ──
+        # image: ghcr.io/migueldlm/conseil:latest
+        # ── Option B: Dev with hostPath (uncomment volumes below) ──
+        image: node:22-slim
+        workingDir: /app
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          # Copy kubectl if bundled
+          [ -f /app/bin/kubectl ] && cp /app/bin/kubectl /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
+          # Build if needed (hostPath dev mode)
+          [ -d /app/src ] && [ ! -d /app/dist ] && npm install && npm run build
+          exec node dist/index.js
+        envFrom:
+        - configMapRef:
+            name: conseil-config
+        env:
+        - name: PORT
+          value: "3000"
+        - name: SPECIFY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: conseil-secrets
+              key: SPECIFY_PASSWORD
+        - name: SPECIFY_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: conseil-secrets
+              key: SPECIFY_DB_PASSWORD
+        - name: MCP_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: conseil-secrets
+              key: MCP_API_KEY
+        - name: BHL_API_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: conseil-config
+              key: BHL_API_KEY
+        - name: ALLOWED_ORIGINS
+          valueFrom:
+            configMapKeyRef:
+              name: conseil-config
+              key: ALLOWED_ORIGINS
+        - name: SESSION_IDLE_TTL_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: conseil-config
+              key: SESSION_IDLE_TTL_SECONDS
+        - name: MORPHOSOURCE_API_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: conseil-config
+              key: MORPHOSOURCE_API_KEY
+        - name: ZOTERO_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: conseil-secrets
+              key: ZOTERO_API_KEY
+        - name: WEBDAV_USER
+          valueFrom:
+            secretKeyRef:
+              name: conseil-secrets
+              key: WEBDAV_USER
+        - name: WEBDAV_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: conseil-secrets
+              key: WEBDAV_PASSWORD
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        # ── Uncomment for Option B (hostPath dev) ──
+        # volumeMounts:
+        # - name: app-source
+        #   mountPath: /app
+      # ── Uncomment for Option B (hostPath dev) ──
+      # volumes:
+      # - name: app-source
+      #   hostPath:
+      #     path: /path/to/your/conseil
+      #     type: Directory
+      # nodeSelector:
+      #   kubernetes.io/hostname: your-node-name
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: conseil-mcp
+  namespace: specify7
+spec:
+  selector:
+    app: conseil-mcp
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 3000
+
+---
+# ┌─────────────────────────────────────────────────────────┐
+# │  Ingress — Expose via your domain                       │
+# │  Adjust annotations for your ingress controller         │
+# └─────────────────────────────────────────────────────────┘
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: conseil-mcp
+  namespace: specify7
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  rules:
+  - host: "mcp.your-domain.com"           # <CHANGE_ME>
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: conseil-mcp
+            port:
+              number: 80

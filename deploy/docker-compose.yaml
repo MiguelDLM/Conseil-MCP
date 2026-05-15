@@ -1,0 +1,26 @@
+services:
+  mcp-server:
+    build: ..
+    container_name: conseil-mcp
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - MCP_API_KEY=your_secret_key_here
+      - SPECIFY_CONNECTION_MODE=direct # Use 'direct' for Docker Compose
+      - SPECIFY_DB_HOST=mariadb      # Container name of your MariaDB
+      - SPECIFY_DB_PORT=3306
+      - SPECIFY_DB_USER=master
+      - SPECIFY_DB_PASSWORD=master
+      - SPECIFY_DB_NAME=specify
+      - SPECIFY_URL=http://specify7-web:8080
+      - SPECIFY_USERNAME=master
+      - SPECIFY_PASSWORD=master
+      - BHL_API_KEY=your_bhl_api_key_here
+    networks:
+      - specify7-network # Connect to your existing Specify 7 network
+
+networks:
+  specify7-network:
+    external: true

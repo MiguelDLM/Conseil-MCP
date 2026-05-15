@@ -1,0 +1,24 @@
+node_modules/
+dist/
+bin/kubectl
+*.env
+.env*
+
+# Local deployment overrides with real credentials
+deploy/*-local.yaml
+deploy/*-nipogi.yaml
+
+# Development
+scratch/
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Context and development stuff
+context/*
+!context/schema_localization_en.json
+!context/table_ids.json
