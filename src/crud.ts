@@ -47,6 +47,7 @@ export async function getRecord(tableName: string, id: number): Promise<string> 
   if (!result) return `Record with ${pkCol}=${recId} not found in table ${tbl}.`;
 
   return Object.entries(result)
+    .filter(([_, value]) => value !== null && value !== undefined && value !== '')
     .map(([key, value]) => `${key}: ${value}`)
     .join('\n');
 }
