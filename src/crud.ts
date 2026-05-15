@@ -109,6 +109,31 @@ function buildCondition(col: string, raw: SearchFilterValue): string {
   }
 }
 
+/**
+ * Curated default column sets for the most common Specify tables.
+ *
+ * When the caller doesn't pass `fields`, returning every column is wasteful:
+ * `taxon` is 50+ columns, `collectionobject` is 70+. The LLM rarely needs
+ * more than a handful. We default to a compact projection per table and the
+ * caller can opt in to full columns with `fields=["*"]` or by listing them.
+ */
+const DEFAULT_FIELDS: Record<string, string[]> = {
+  taxon:             ['TaxonID', 'FullName', 'Name', 'RankID', 'ParentID', 'IsAccepted'],
+  collectionobject:  ['CollectionObjectID', 'CatalogNumber', 'AltCatalogNumber', 'CollectionID', 'CollectingEventID', 'CatalogedDate'],
+  determination:     ['DeterminationID', 'CollectionObjectID', 'TaxonID', 'IsCurrent', 'DeterminedDate'],
+  locality:          ['LocalityID', 'LocalityName', 'Latitude1', 'Longitude1', 'GeographyID'],
+  geography:         ['GeographyID', 'Name', 'FullName', 'RankID', 'ParentID'],
+  agent:             ['AgentID', 'AgentType', 'FirstName', 'LastName', 'Email'],
+  attachment:        ['AttachmentID', 'OrigFilename', 'Title', 'MimeType', 'AttachmentLocation'],
+  preparation:       ['PreparationID', 'CollectionObjectID', 'PrepTypeID', 'CountAmt'],
+  collectingevent:   ['CollectingEventID', 'StartDate', 'EndDate', 'LocalityID', 'StationFieldNumber'],
+  geologictimeperiod:['GeologicTimePeriodID', 'Name', 'FullName', 'RankID', 'StartPeriod', 'EndPeriod'],
+  lithostrat:        ['LithoStratID', 'Name', 'FullName', 'RankID', 'ParentID'],
+  storage:           ['StorageID', 'Name', 'FullName', 'RankID', 'ParentID'],
+  referencework:     ['ReferenceWorkID', 'Title', 'WorkDate', 'DOI'],
+  spauditlog:        ['SpAuditLogID', 'TableNum', 'RecordId', 'Action', 'TimestampCreated', 'CreatedByAgentID'],
+};
+
 export async function searchRecords(
   tableName: string,
   filters: Record<string, SearchFilterValue>,
@@ -127,10 +152,32 @@ export async function searchRecords(
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  
-  let selectClause = '*';
+
+  // Field projection:
+  //   fields=undefined → use the curated default for the table (or PK only)
+  //   fields=["*"]     → return every column (explicit opt-in)
+  //   fields=[...]     → exactly those columns
+  let selectClause: string;
   if (fields && fields.length > 0) {
-    selectClause = fields.map(f => safeIdent(f, 'select field')).join(', ');
+    if (fields.length === 1 && fields[0] === '*') {
+      selectClause = '*';
+    } else {
+      selectClause = fields.map(f => safeIdent(f, 'select field')).join(', ');
+    }
+  } else {
+    const defaults = DEFAULT_FIELDS[tbl.toLowerCase()];
+    if (defaults) {
+      selectClause = defaults.map(f => safeIdent(f, 'select field')).join(', ');
+    } else {
+      // Unknown table — derive a compact projection: PK + first 4 columns.
+      const pk = await getPrimaryKeyColumn(tbl);
+      const colsResult = await query(`SHOW COLUMNS FROM ${tbl}`);
+      const cols = colsResult.rows
+        .map(r => r.Field)
+        .filter((f): f is string => !!f && !/^(TimestampCreated|TimestampModified|version|CreatedByAgentID|ModifiedByAgentID|GUID)$/i.test(f));
+      const chosen = [pk, ...cols.filter(c => c !== pk).slice(0, 4)];
+      selectClause = chosen.map(c => safeIdent(c, 'select field')).join(', ');
+    }
   }
 
   const sql = `SELECT ${selectClause} FROM ${tbl} ${whereClause} LIMIT ${safeLimit} OFFSET ${safeOffset}`;

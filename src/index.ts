@@ -141,13 +141,13 @@ function createServer() {
 
   // ─── Specify: Admin ───────────────────────────────────────────────────────
   register('specify_list_users', 'List all Specify users', {}, () => listSpecifyUsers());
-  register('specify_api_request', 'Execute an arbitrary REST API request to Specify 7 official endpoints (e.g. /api/specify/attachment/upload/)', 
-    { method: z.string().describe("GET, POST, PUT, PATCH, DELETE"), path: z.string().describe("Path starting with / (e.g. /api/specify/collectionobject/)"), body: z.string().optional().describe("JSON string payload"), query_params: z.string().optional().describe("JSON string of query parameters"), extra_headers: z.string().optional().describe("JSON string of extra headers") },
+  register('specify_api_request', 'Raw REST passthrough to Specify 7 (method, path, body[json], query_params[json], extra_headers[json])',
+    { method: z.string(), path: z.string(), body: z.string().optional(), query_params: z.string().optional(), extra_headers: z.string().optional() },
     async (a: any) => {
       const res = await executeSpecifyApi(a.method, a.path, a.body ? JSON.parse(a.body) : undefined, a.query_params ? JSON.parse(a.query_params) : undefined, a.extra_headers ? JSON.parse(a.extra_headers) : undefined);
       return stripNulls(res);
     });
-  register('specify_create_user', 'Create new Specify user (with Agent linkage). Pass makeAdmin=true to also grant the % resource policy.',
+  register('specify_create_user', 'Create Specify user + Agent. makeAdmin=true grants % policy',
     { username: z.string(), password: z.string(), email: z.string(), firstName: z.string(), lastName: z.string(), collectionId: z.number(), makeAdmin: z.boolean().optional() },
     (a: any) => createSpecifyUser(a.username, a.password, a.email, a.firstName, a.lastName, a.collectionId, a.makeAdmin ?? false));
   register('specify_delete_user', 'Delete or deactivate user safely',
@@ -158,11 +158,11 @@ function createServer() {
   register('specify_get_row', 'Get a row by primary key',
     { table_name: z.string(), record_id: z.number() },
     (a: any) => getRecord(a.table_name, a.record_id));
-  register('specify_search', 'Search a table with JSON filters and operators (EQ, NE, GT, GTE, LT, LTE, LIKE, IN, BETWEEN, IS_NULL, IS_NOT_NULL)',
-    { table_name: z.string(), filters: z.string().describe('JSON object. Shorthand: {"field":"val"}. Operator form: {"field":{"op":"GT","value":"2024-01-01"}}'), limit: z.number().optional().describe("Default 10. Max 500"), offset: z.number().optional(), fields: z.array(z.string()).optional().describe("Optional list of columns to return to save tokens") },
+  register('specify_search', 'SELECT with JSON filters. filters: {col:"v"} or {col:{op,value}}. ops: EQ,NE,GT,GTE,LT,LTE,LIKE,IN,BETWEEN,IS_NULL,IS_NOT_NULL. fields[] cuts cols.',
+    { table_name: z.string(), filters: z.string(), limit: z.number().optional(), offset: z.number().optional(), fields: z.array(z.string()).optional() },
     (a: any) => searchRecords(a.table_name, JSON.parse(a.filters), a.limit, a.offset, a.fields));
-  register('specify_update_row', 'Update fields on a row (optimistic-lock via expected_version)',
-    { table_name: z.string(), record_id: z.number(), updates: z.string().describe('JSON object of {column: value}'), expected_version: z.number().optional() },
+  register('specify_update_row', 'Update row; pass expected_version for optimistic lock',
+    { table_name: z.string(), record_id: z.number(), updates: z.string(), expected_version: z.number().optional() },
     (a: any) => updateRecord(a.table_name, a.record_id, JSON.parse(a.updates), a.expected_version));
   register('specify_batch_update', 'Update multiple rows transactionally (cap 500 ids)',
     { table_name: z.string(), ids: z.array(z.number()).max(500), updates: z.string() },
@@ -170,23 +170,23 @@ function createServer() {
   register('specify_list_related', 'List related rows via a known foreign key',
     { table_name: z.string(), record_id: z.number(), relationship: z.string() },
     (a: any) => listRelatedRecords(a.table_name, a.record_id, a.relationship));
-  register('specify_delete_row', 'Delete a row via Django ORM (requires confirm token "delete-<table>-<id>")',
+  register('specify_delete_row', 'Delete row via ORM. confirm must equal "delete-<table>-<id>"',
     { table_name: z.string(), record_id: z.number(), confirm: z.string() },
     (a: any) => deleteRecord(a.table_name, a.record_id, a.confirm));
 
   // ─── Specify: Schema introspection ────────────────────────────────────────
-  register('specify_list_tables', 'List Specify tables (optional SQL LIKE pattern, e.g. "taxon%" or "%attachment%")',
+  register('specify_list_tables', 'List tables; pattern is SQL LIKE (e.g. "taxon%")',
     { pattern: z.string().optional() },
     (a: any) => listAllTables(a.pattern));
-  register('specify_describe_table', 'Describe fields of a table',
-    { table_name: z.string() },
-    (a: any) => getTableFieldMetadata(a.table_name));
+  register('specify_describe_table', 'Describe data-bearing fields of a table. include_relationships+include_cached_ranks add 60+ extra rows',
+    { table_name: z.string(), include_relationships: z.boolean().optional(), include_cached_ranks: z.boolean().optional() },
+    (a: any) => getTableFieldMetadata(a.table_name, a.include_relationships, a.include_cached_ranks));
   register('specify_list_fks', 'List foreign-key relationships from a table',
     { table_name: z.string() },
     (a: any) => getRelationships(a.table_name));
 
   // ─── Specify: Authority trees ─────────────────────────────────────────────
-  register('specify_browse_tree', 'Browse a tree-shaped table (taxon, geography, storage, geologictimeperiod, lithostrat)',
+  register('specify_browse_tree', 'Browse tree table: taxon/geography/storage/geologictimeperiod/lithostrat',
     { table_name: z.string(), parent_id: z.number().optional() },
     (a: any) => browseAuthorityTree(a.table_name, a.parent_id));
   register('specify_get_taxon_lineage', 'Full lineage of a taxon',
@@ -273,8 +273,8 @@ function createServer() {
 
   // ─── Specify: ViewSets ────────────────────────────────────────────────────
   register('specify_list_viewsets', 'List UI ViewSets', {}, () => listViewSets());
-  register('specify_viewset_xml', 'Get ViewSet XML (truncated to max_chars; pass 0 for full)',
-    { viewset_id: z.number().int(), max_chars: z.number().int().optional().describe('Default 4000. 0 = full.') },
+  register('specify_viewset_xml', 'ViewSet XML, truncated. max_chars default 4000; 0 = full',
+    { viewset_id: z.number().int(), max_chars: z.number().int().optional() },
     (a: any) => getViewSetXml(a.viewset_id, a.max_chars ?? 4000));
   register('specify_update_viewset', 'Replace ViewSet XML (by numeric viewSetDataId)',
     { viewset_data_id: z.number().int(), new_xml: z.string() },
@@ -308,7 +308,7 @@ function createServer() {
     { taxon_id: z.number() },
     (a: any) => curateTaxonWithGbif(a.taxon_id));
   register('gbif_match_batch', 'Batch GBIF match for multiple Specify taxa',
-    { taxa_json: z.string().describe('JSON array of {id, name}') },
+    { taxa_json: z.string() },
     (a: any) => curateTaxaBatch(JSON.parse(a.taxa_json)));
   register('gbif_search_occurrences', 'Search GBIF occurrences (by name + optional country/bbox)',
     { taxon_name: z.string().optional(), taxon_key: z.number().optional(), country: z.string().optional(), decimal_latitude: z.string().optional(), decimal_longitude: z.string().optional(), has_coordinate: z.boolean().optional(), limit: z.number().optional() },
@@ -325,7 +325,7 @@ function createServer() {
   register('pbdb_match_batch', 'Batch PBDB lookup for many Specify taxon rows (cap 200, parallel)',
     { taxon_ids: z.array(z.number()).max(200) },
     (a: any) => curateTaxaWithPbdbBatch(a.taxon_ids));
-  register('specify_audit_taxonomy_quality', 'Find malformed Specify FullName entries (duplicate prefix etc.); optionally scoped under a root_taxon_id',
+  register('specify_audit_taxonomy_quality', 'Find malformed Taxon.FullName (duplicate prefixes etc.)',
     { root_taxon_id: z.number().optional() },
     (a: any) => auditTaxonomyQuality(a.root_taxon_id));
   register('pbdb_verify_occurrence', 'Verify whether a taxon has been reported in a formation',
@@ -359,11 +359,11 @@ function createServer() {
   register('morphosource_search_taxon', 'Search Morphosource media+objects by taxon name',
     { taxon_name: z.string() },
     (a: any) => searchMorphosourceByTaxon(a.taxon_name));
-  register('morphosource_search_taxa_batch', 'Batch search up to 50 taxa on Morphosource in one call (returns counts + 2 top hits per taxon)',
+  register('morphosource_search_taxa_batch', 'Batch search Morphosource by ≤50 taxa; returns {count, top[2]}',
     { taxon_names: z.array(z.string()).max(50) },
     (a: any) => searchMorphosourceTaxaBatch(a.taxon_names));
   register('morphosource_request_download', 'Request a temporary download URL for a Morphosource media item',
-    { media_id: z.string(), use_statement: z.string().describe('Min 50 chars (Morphosource policy)') },
+    { media_id: z.string(), use_statement: z.string() },
     (a: any) => requestMorphosourceDownload(a.media_id, a.use_statement));
 
   // ─── Other authority APIs ─────────────────────────────────────────────────
@@ -459,7 +459,7 @@ function createServer() {
   register('zotero_extract_annotation', 'Download a Zotero annotation PDF page to /tmp on the MCP pod',
     { annotation_key: z.string() },
     (a: any) => extractZoteroAnnotation(a.annotation_key));
-  register('zotero_upload_attachment', 'Upload a local file (e.g. extracted Zotero PDF) to the Specify Asset Server and link it to a record',
+  register('zotero_upload_attachment', 'Upload local file to Asset Server and link to a Specify record',
     { file_path: z.string(), table_name: z.string(), record_id: z.number(), title: z.string().optional(), mime_type: z.string().optional() },
     (a: any) => uploadAttachmentToSpecify(a));
   register('zotero_cleanup_cache', 'Delete temporary Zotero files in /tmp',
